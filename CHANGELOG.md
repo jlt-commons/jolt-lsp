@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.1 - 2026-11-11
+
+- A def whose value is a map, `(def m {:k f})`, records the references
+  inside the map. They were skipped as an attr-map, so `f` could be reported
+  unused. `(def m {:private true})` no longer marks `m` private.
+
 ## v0.2.0 - 2026-11-11
 
 - Structural diff (`jolt_structural_diff`, `structural-diff`,
