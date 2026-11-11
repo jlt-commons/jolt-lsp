@@ -9,7 +9,7 @@
 
 (defn- parse-args [args]
   (loop [args args
-         opts {:json false :apply false :all false :kondo false}
+         opts {:json false :apply false :all false}
          pos []]
     (if (empty? args)
       (assoc opts :cmd (first pos) :pos (vec (rest pos)))
@@ -19,6 +19,7 @@
           "--apply" (recur (rest args) (assoc opts :apply true) pos)
           "--all" (recur (rest args) (assoc opts :all true) pos)
           "--kondo" (recur (rest args) (assoc opts :kondo true) pos)
+          "--no-kondo" (recur (rest args) (assoc opts :kondo false) pos)
           "--root" (recur (rest (rest args)) (assoc opts :root (second args)) pos)
           "--limit" (recur (rest (rest args)) (assoc opts :limit (read-string (second args))) pos)
           "--direction" (recur (rest (rest args)) (assoc opts :direction (keyword (second args))) pos)
@@ -53,7 +54,7 @@
                 (println "usage: jolt-lsp <command> [options]")
                 (println "commands: index refresh search def refs hover symbols diagnostics calls impact")
                 (println "          deps form context rename clean-ns add-require replace-form insert-form")
-                (println "          new-file-ns ignored-forms lsp mcp"))]
+                (println "          format new-file-ns ignored-forms lsp mcp"))]
     (cond
       (= cmd "index") (show opts (assoc (api/index-status r) :command "index"))
       (= cmd "refresh") (show opts (do (api/refresh! r) (api/index-status r)))
@@ -85,6 +86,7 @@
       (= cmd "insert-form") (show opts (api/insert-form* r {:file file :after (:after opts)
                                                             :new-text (:new-text opts)
                                                             :apply (:apply opts)}))
+      (= cmd "format") (show opts (api/format* r {:file file :apply (:apply opts)}))
       (= cmd "refactor") (let [[kind file* line* col* & more] (:pos opts)]
                            (show opts (api/refactor* r {:kind kind
                                                         :file file*

@@ -7,6 +7,7 @@
             [jolt-lsp.edit.clean-ns :as clean-ns]
             [jolt-lsp.edit.rename :as rename]
             [jolt-lsp.edit.vedit :as vedit]
+            [jolt-lsp.format :as fmt]
             [jolt-lsp.forms :as forms]
             [jolt-lsp.generate]
             [jolt-lsp.ignored]
@@ -14,6 +15,7 @@
             [jolt-lsp.paths :as paths]
             [jolt-lsp.query :as query]
             [jolt-lsp.refactor :as refactor]
+            [jolt-lsp.settings :as settings]
             [jolt-lsp.text :as text]))
 
 (defonce state (atom {:root nil :db nil}))
@@ -115,11 +117,22 @@
   (let [d (ensure-db root)]
     (query/document-symbols d (:file opts))))
 
+(defn- diag-opts [root opts]
+  (let [cfg (settings/load-settings (root-for root))
+        k (if (contains? opts :kondo)
+            (boolean (:kondo opts))
+            (let [v (:kondo cfg)] (if (nil? v) (jolt-lsp.kondo/available?) (boolean v))))]
+    {:root (root-for root)
+     :kondo k
+     :custom-linters (:custom-linters cfg)
+     :clj-depend (:clj-depend cfg)}))
+
 (defn diagnostics* [root opts]
-  (let [d (ensure-db root)]
+  (let [d (ensure-db root)
+        o (diag-opts root opts)]
     (if (:all opts)
-      (vec (diagnostics/project-diagnostics d {:kondo (:kondo opts)}))
-      (vec (diagnostics/file-diagnostics d (:file opts) {:kondo (:kondo opts)})))))
+      (vec (diagnostics/project-diagnostics d o))
+      (vec (diagnostics/file-diagnostics d (:file opts) o)))))
 
 (defn- direction [x default]
   (if x (keyword (name x)) default))
@@ -253,9 +266,17 @@
             :cycle-keyword (refactor/cycle-keyword d (:file opts) (:line opts) (:col opts))
             :inline-symbol (refactor/inline-symbol d (:file opts) (:line opts) (:col opts))
             :destructure-keys (refactor/destructure-keys d (:file opts) (:line opts) (:col opts))
+            :restructure-keys (refactor/restructure-keys d (:file opts) (:line opts) (:col opts))
             :move-form (refactor/move-form d (:file opts) (:line opts) (:col opts)
                                            (:target-file opts))
             {:ok false :reason (str "unknown refactor " (:kind opts))})]
     (if (and (:ok r) (:apply opts))
       (do (doseq [[p text] (:preview r)] (spit p text)) r)
+      r)))
+
+
+(defn format* [root opts]
+  (let [r (fmt/format-file (root-for root) (:file opts))]
+    (if (and (:ok r) (:apply opts) (:changed r))
+      (do (spit (:file opts) (:preview r)) r)
       r)))

@@ -128,13 +128,19 @@
                   :properties {:root {:type "string"}
                                :kind {:type "string"
                                       :enum ["sort-requires" "cycle-keyword" "inline-symbol"
-                                             "destructure-keys" "move-form"]}
+                                             "destructure-keys" "restructure-keys" "move-form"]}
                                :file {:type "string"}
                                :line {:type "integer"}
                                :col {:type "integer"}
                                :target_file {:type "string"}
                                :apply {:type "boolean"}}
                   :required ["kind" "file"]}}
+   {:name "jolt_format"
+    :description "Format a whole file with cljfmt. Previews by default."
+    :inputSchema {:type "object"
+                  :properties {:root {:type "string"} :file {:type "string"}
+                               :apply {:type "boolean"}}
+                  :required ["file"]}}
    {:name "jolt_batch"
     :description "Run several read-only tool calls in one round trip."
     :inputSchema {:type "object"
@@ -173,6 +179,7 @@
       "jolt_replace_form" (api/replace-form* root a)
       "jolt_insert_form" (api/insert-form* root a)
       "jolt_refactor" (api/refactor* root a)
+      "jolt_format" (api/format* root a)
       "jolt_batch" {:results (mapv (fn [op] (call-tool (:tool op) (:args op))) (:ops a))}
       {:ok false :error (str "unknown tool " name)})))
 

@@ -3,6 +3,7 @@
             [babashka.fs :as fs]
             [jolt-lsp.api :as api]
             [jolt-lsp.db :as db]
+            [jolt-lsp.format]
             [jolt-lsp.generate :as generate]
             [jolt-lsp.ignored :as ignored]
             [jolt-lsp.mcp :as mcp]
@@ -54,3 +55,29 @@
       (is (nil? (db/var-by-fqn d3 "app.core/greet")))
       (let [d4 (db/delete-file d3 tmp core)]
         (is (= (dec before) (count (db/all-files d4))))))))
+
+(deftest formatting-preview
+  (let [tmp (str (fs/create-temp-dir))
+        f (str tmp "/x.clj")]
+    (spit f "(defn f[x](+ x 1))")
+    (let [r (jolt-lsp.format/format-file tmp f)]
+      (is (:ok r))
+      (is (:changed r))
+      (is (= "(defn f [x] (+ x 1))" (:preview r))))))
+
+(deftest custom-and-layer-linters
+  (let [tmp (str (fs/create-temp-dir))
+        _ (fs/copy-tree "test/fixtures/simple" tmp)
+        core (str tmp "/src/app/core.clj")
+        _ (fs/create-dirs (str tmp "/linters"))
+        _ (fs/create-dirs (str tmp "/.jolt-lsp"))
+        _ (spit (str tmp "/linters/my.clj")
+                "(ns my.linters)\n(defn analyze [ctx] [{:row 1 :col 1 :end-row 1 :end-col 2 :severity :warning :code :my-warning :message \"custom\"}])\n")
+        _ (spit (str tmp "/.jolt-lsp/config.edn")
+                (pr-str {:kondo false
+                         :custom-linters [{:file "linters/my.clj" :fn "my.linters/analyze"}]
+                         :clj-depend {:rules [{:from "app.core" :to "app.util"}]}}))
+        _ (api/refresh! tmp)
+        ds (api/diagnostics* tmp {:file core})]
+    (is (some #(and (= :custom (:source %)) (= :my-warning (:code %))) ds))
+    (is (some #(= :layer-violation (:code %)) ds))))

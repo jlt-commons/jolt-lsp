@@ -1,8 +1,10 @@
 (ns jolt-lsp.diagnostics
   "Built-in findings for one file, computed from the index."
   (:require [clojure.string :as string]
+            [jolt-lsp.custom :as custom]
             [jolt-lsp.db :as db]
-            [jolt-lsp.kondo :as kondo]))
+            [jolt-lsp.kondo :as kondo]
+            [jolt-lsp.layer :as layer]))
 
 (defn- diag [r severity code message]
   {:row (nth r 0) :col (nth r 1)
@@ -102,7 +104,11 @@
                    (duplicate-requires requires)
                    (unused-bindings locals local-refs)
                    (unused-private-vars var-defs refs)
-                   (when (:kondo opts) (kondo/lint [path])))
+                   (when (:kondo opts) (kondo/lint [path]))
+                   (when (:custom-linters opts)
+                     (custom/lint db (:root opts) path opts))
+                   (when (:clj-depend opts)
+                     (layer/file-diagnostics db path (:clj-depend opts))))
            (map #(assoc % :file path))
            (reduce (fn [m d]
                      (assoc m [(:file d) (:row d) (:col d) (:code d)] d))

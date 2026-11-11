@@ -39,3 +39,11 @@
     (let [r (refactor/cycle-keyword @index core (:row k) (:col k))]
       (is (:ok r))
       (is (re-find #":demo\.core/thing" (get (:preview r) core))))))
+
+(deftest restructure-bindings
+  (let [file (db/file-by-path @index core)
+        l (some #(when (= "a" (:name %)) %) (db/local-defs-in-file @index (:id file)))
+        r (refactor/restructure-keys @index core (:row l) (:col l))]
+    (is (:ok r))
+    (is (re-find #"\{:keys \[a b\]\} m" (get (:preview r) core)))
+    (is (not (re-find #"\(:a m\)" (get (:preview r) core))))))

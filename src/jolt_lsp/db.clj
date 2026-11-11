@@ -466,6 +466,7 @@
 (defn all-keyword-defs [db]
   (rc/rows db :keyword-def))
 
+
 (defn local-def-by-id [db id]
   (rc/row db :local-def id))
 

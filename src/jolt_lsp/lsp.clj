@@ -324,6 +324,18 @@
                     :command {:title (str n (if (= n 1) " reference" " references"))
                               :command ""}}))))))
 
+(defn- handle-formatting [params]
+  (let [path (uri->path (get-in params [:textDocument :uri]))
+        source (source-of path)
+        r (jolt-lsp.format/format-string (root) source)]
+    (if (and (:ok r) (not= source (:text r)))
+      (let [lines (string/split source #"\n" -1)]
+        [{:range {:start {:line 0 :character 0}
+                  :end {:line (dec (count lines))
+                        :character (count (last lines))}}
+          :newText (:text r)}])
+      [])))
+
 (defn- handle [msg]
   (let [method (:method msg)
         id (:id msg)
@@ -354,7 +366,8 @@
                           :semanticTokensProvider {:legend {:tokenTypes token-types
                                                             :tokenModifiers []}
                                                    :full true}
-                          :codeLensProvider {:resolveProvider false}}
+                          :codeLensProvider {:resolveProvider false}
+                          :documentFormattingProvider true}
                          :serverInfo {:name "jolt-lsp" :version "0.1.0"}}))
 
       "initialized" nil
@@ -398,6 +411,7 @@
       "textDocument/prepareRename" (rpc/respond id (handle-prepare-rename params))
       "textDocument/semanticTokens/full" (rpc/respond id (handle-semantic-tokens params))
       "textDocument/codeLens" (rpc/respond id (handle-code-lens params))
+      "textDocument/formatting" (rpc/respond id (handle-formatting params))
       "shutdown" (rpc/respond id nil)
       "exit" (System/exit 0)
       (when id (rpc/respond-error id -32601 (str "unknown method " method))))))

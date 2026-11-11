@@ -27,7 +27,7 @@ write. Previews include the edited files and per-edit old/new text.
 | `jolt_references` | `symbol`, `root?` |
 | `jolt_hover` | `symbol` or `file`+`line`+`col`, `root?` |
 | `jolt_symbols` | `file`, `root?` |
-| `jolt_diagnostics` | `file?`, `all?`, `kondo?`, `root?` |
+| `jolt_diagnostics` | `file?`, `all?`, `kondo?` (default: on when installed), `root?` |
 | `jolt_call_hierarchy` | `symbol`, `direction` (`callers`/`callees`) |
 | `jolt_impact` | `symbol`, `root?` |
 | `jolt_deps` | `ns`, `direction` (`dependencies`/`dependents`) |
@@ -38,7 +38,8 @@ write. Previews include the edited files and per-edit old/new text.
 | `jolt_add_require` | `file`, `symbol`, `alias?`, `apply?` |
 | `jolt_replace_form` | `file`, `old_form`, `new_text`, `apply?` |
 | `jolt_insert_form` | `file`, `after`, `new_text`, `apply?` |
-| `jolt_refactor` | `kind` (`sort-requires`, `cycle-keyword`, `inline-symbol`, `destructure-keys`, `move-form`), `file`, `line?`, `col?`, `target_file?`, `apply?` |
+| `jolt_refactor` | `kind` (`sort-requires`, `cycle-keyword`, `inline-symbol`, `destructure-keys`, `restructure-keys`, `move-form`), `file`, `line?`, `col?`, `target_file?`, `apply?` |
+| `jolt_format` | `file`, `apply?`, `root?` |
 | `jolt_batch` | `ops: [{:tool, :args}]` (read-only ops) |
 
 Every tool returns content blocks whose text is JSON. `jolt_index` builds or
@@ -50,8 +51,8 @@ dependents, and diagnostics for a namespace.
 
 `index`, `refresh`, `search`, `def`, `refs`, `hover`, `symbols`,
 `diagnostics`, `calls`, `impact`, `deps`, `form`, `context`, `rename`,
-`clean-ns`, `add-require`, `replace-form`, `insert-form`, `new-file-ns`,
-`ignored-forms`, plus `lsp` and `mcp`.
+`clean-ns`, `add-require`, `replace-form`, `insert-form`, `refactor`,
+`format`, `java`, `new-file-ns`, `ignored-forms`, plus `lsp` and `mcp`.
 
 ## Recommended agent flow
 

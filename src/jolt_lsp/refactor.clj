@@ -154,6 +154,79 @@
                                 (distinct-by :key info))]
             (single path (into [binding-edit] ref-edits))))))))
 
+(defn- binding-vector-at [source row col]
+  (some (fn [n]
+          (when (= :list (tree/tag n))
+            (let [cs (tree/children n)
+                  head (some-> (first cs) tree/text)
+                  v (second cs)]
+              (when (and (contains? #{"let" "let*" "loop" "loop*" "when-let" "if-let"
+                                     "when-some" "if-some" "with-open" "doseq" "for"}
+                                   head)
+                         v (= :vector (tree/tag v)))
+                v))))
+        (reverse (cursor/enclosing-forms source row col))))
+
+(defn- map-keys [node]
+  (when (= :map (tree/tag node))
+    (let [cs (tree/children node)]
+      (mapcat (fn [[k v]]
+                (when (and (= ":keys" (tree/text k)) (= :vector (tree/tag v)))
+                  (keep (fn [n] (let [t (tree/text n)]
+                                  (when-not (string/includes? t "/") t)))
+                        (tree/children v))))
+              (partition-all 2 cs)))))
+
+(defn- pair-info [pair]
+  (let [pat (first pair)
+        init (second pair)]
+    (when (and pat init)
+      (let [range [(first (tree/node-range pat)) (nth (tree/node-range pat) 1)
+                   (nth (tree/node-range init) 2) (nth (tree/node-range init) 3)]]
+        (cond
+          (and (tree/symbol-node? pat)
+               (= :list (tree/tag init))
+               (= 2 (count (tree/children init)))
+               (tree/keyword-node? (first (tree/children init)))
+               (tree/symbol-node? (second (tree/children init))))
+          (let [k (first (tree/children init))
+                m (second (tree/children init))
+                kt (tree/text k)]
+            (when (and (string/starts-with? kt ":") (not (string/includes? (subs kt 1) "/")))
+              {:kind :call :range range :map-sym (tree/text m)
+               :keys [(subs kt 1)]}))
+
+          (and (= :map (tree/tag pat))
+               (tree/symbol-node? init))
+          (let [ks (vec (map-keys pat))]
+            (when (seq ks)
+              {:kind :destructure :range range :map-sym (tree/text init)
+               :keys ks}))
+
+          :else nil)))))
+
+(defn restructure-keys [db path row col]
+  (let [source (slurp path)
+        v (binding-vector-at source row col)
+        cs (when v (tree/children v))
+        infos (keep pair-info (partition-all 2 cs))
+        groups (group-by :map-sym infos)]
+    (if (empty? groups)
+      {:ok false :reason "no restructurable bindings at position"}
+      (let [edits
+            (mapcat (fn [[_ infos]]
+                      (let [ks (sort (distinct (mapcat :keys infos)))
+                            first-info (first infos)
+                            rest-infos (rest infos)]
+                        (concat
+                         [(vedit/range->edit source (:range first-info)
+                                             (str "{:keys [" (string/join " " ks) "]} "
+                                                  (:map-sym first-info)))]
+                         (map (fn [i] (vedit/range->edit source (:range i) ""))
+                              rest-infos))))
+                    groups)]
+        (single path (vec edits))))))
+
 (defn move-form [db path row col target-file]
   (let [source (slurp path)
         forms (forms/top-level-forms source)

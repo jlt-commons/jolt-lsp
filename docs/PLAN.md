@@ -701,11 +701,11 @@ transaction) and keep `rc/*` for incremental writes. Do not remove the schema.
 - **M7 performance** — done. Analysis cache, dependency source indexing from
   JARs and git/local roots, per-file row patching, polling watcher, benchmark,
   standalone binary.
-- **M8 P2 refactors** — partially done. Shipped: sort-requires, cycle-keyword,
-  inline-symbol, destructure-keys, move-form, semantic tokens, code lens, and
-  the optional clj-kondo bridge. Not shipped: restructure-keys, whole-file
-  formatting, custom linters, clj-depend.
+- **M8 P2 refactors** — done for the planned set: sort-requires, cycle-keyword,
+  inline-symbol, destructure-keys, restructure-keys, move-form, semantic
+  tokens, code lens, whole-file cljfmt formatting, custom project linters,
+  clj-depend-style layer rules, and the clj-kondo bridge.
 
 Known limitations: dependency indexing covers Clojure sources in JARs and
-source roots (no Java decompilation); clj-kondo is opt-in; restructure-keys,
-formatting, custom linters, and clj-depend remain future work.
+source roots; Java is out of scope. clj-kondo is on by default when installed
+and can be disabled per project or per call.
