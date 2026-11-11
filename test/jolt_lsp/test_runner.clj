@@ -8,7 +8,7 @@
   (:require [clojure.test :as t]))
 
 (def test-namespaces
-  '[jolt-lsp.smoke-test jolt-lsp.index-test jolt-lsp.extras-test jolt-lsp.refactor-test
+  '[jolt-lsp.smoke-test jolt-lsp.index-test jolt-lsp.analyze-def-test jolt-lsp.extras-test jolt-lsp.refactor-test
     jolt-lsp.syntax-test jolt-lsp.replace-test jolt-lsp.review-test
     jolt-lsp.sdiff.core-test jolt-lsp.sdiff.group-test jolt-lsp.sdiff.names-test
     jolt-lsp.sdiff.address-test jolt-lsp.surgeon.cljc-test jolt-lsp.surgeon.move-test

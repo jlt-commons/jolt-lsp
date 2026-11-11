@@ -200,13 +200,25 @@
           (recur inner)))
       false)))
 
-(defn- attr-map-private? [nodes]
-  (some (fn [n]
-          (and (= :map (tree/tag n))
-               (some (fn [[k v]] (and (= ":private" (tree/text k))
-                                      (= "true" (some-> v tree/text))))
-                     (partition-all 2 (tree/children n)))))
-        (take 2 nodes)))
+(def ^:private attr-map-defs
+  "The definers that take an attr-map after the name and docstring."
+  #{"defn" "defn-" "defmacro" "defmulti"})
+
+(defn- attr-map
+  "The attr-map leading nodes, the forms after a definition's docstring, or
+  nil. Only definers that take one have it, and a map with nothing after it
+  is a def's value, not an attr-map."
+  [h nodes]
+  (let [n (first nodes)]
+    (when (and (attr-map-defs h) n (= :map (tree/tag n)) (next nodes))
+      n)))
+
+(defn- attr-map-private? [h nodes]
+  (boolean
+   (when-let [m (attr-map h nodes)]
+     (some (fn [[k v]] (and (= ":private" (tree/text k))
+                            (= "true" (some-> v tree/text))))
+           (partition-all 2 (tree/children m))))))
 
 (defn- doc-string
   "The docstring: a string right after the name with something after it."
@@ -412,7 +424,7 @@
                (fn-tail after-doc))
         private? (or (private-defs h)
                      (meta-private? name-node)
-                     (attr-map-private? after-name))
+                     (attr-map-private? h after-doc))
         fqn (when nm (if (:ns ctx) (str (:ns ctx) "/" nm) nm))
         ctx' (assoc ctx :current-var fqn)]
     (when nm
@@ -468,7 +480,7 @@
                                 (tree/node-range n) (tree/node-range n))))))
 
         ;; def, defonce, defmulti: walk the value/dispatch form
-        (doseq [n (drop-while #(= :map (tree/tag %)) after-doc)]
+        (doseq [n (if (attr-map h after-doc) (rest after-doc) after-doc)]
           (walk-node n ctx' st))))))
 
 (defn- handle-defmethod [node ctx st]
