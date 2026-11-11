@@ -1,0 +1,65 @@
+{:jolt/min-version "0.8.25"
+ :paths ["src" "resources"]
+
+ :deps
+ {rewrite-clj/rewrite-clj {:mvn/version "1.1.49"}
+  org.clojure/data.json   {:mvn/version "2.5.0"}
+  io.github.yogthos/relatum
+  {:git/url "https://github.com/yogthos/relatum"
+   :git/sha "27530913706318d9228e82c567ddd335f28a77c2"}}
+
+ :aliases
+ {;; jolt test
+  :test
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.jlt-commons/writ
+    {:git/url "https://github.com/jlt-commons/writ"
+     :git/sha "11ea31dfd4f261332df3b227c37c962e30eefb4e"}}
+   :main-opts ["-m" "jolt-lsp.test-runner"]}
+
+  ;; jolt spec, jolt plan
+  :spec
+  {:extra-paths ["test"]
+   :extra-deps
+   {io.github.jlt-commons/writ
+    {:git/url "https://github.com/jlt-commons/writ"
+     :git/sha "11ea31dfd4f261332df3b227c37c962e30eefb4e"}}
+   :main-opts ["-m" "jolt-lsp.spec-runner"]}
+
+  ;; jolt bench
+  :bench
+  {:extra-paths ["bench"]
+   :main-opts ["-m" "jolt-lsp.bench"]}
+
+  ;; scratch REPL with writ on the classpath
+  :scratch
+  {:extra-paths ["test" "bench"]
+   :extra-deps
+   {io.github.jlt-commons/writ
+    {:git/url "https://github.com/jlt-commons/writ"
+     :git/sha "11ea31dfd4f261332df3b227c37c962e30eefb4e"}}}
+
+  ;; sibling checkouts, for iterating without a fetch:
+  ;;   jolt -M:test:dev
+  :dev
+  {:override-deps
+   {io.github.yogthos/relatum {:local/root "../../relatum"}
+    io.github.jlt-commons/writ {:local/root "../writ"}}}}
+
+ :tasks
+ {test  {:doc "run the Clojure tests"
+         :task (jolt "-M:test")}
+  test-dev {:doc "run the tests against sibling checkouts"
+            :task (jolt "-M:test:dev")}
+  spec  {:doc "check the writ specs (pending = no implementation yet)"
+         :task (jolt "-M:spec")}
+  spec-dev {:doc "check the specs against sibling checkouts"
+            :task (jolt "-M:spec:dev")}
+  plan  {:doc "print the writ state graphs, signatures and laws"
+         :task (jolt "-M:spec:dev" "--plan")}
+  bench {:doc "run the benchmark"
+         :task (jolt "-M:bench")}
+  ;; `jolt build` is a built-in command, so the task has its own name
+  dist  {:doc "build the standalone jolt-lsp binary"
+         :task (shell "jolt" "build" "-m" "jolt-lsp.main" "-o" "target/jolt-lsp")}}}

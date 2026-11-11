@@ -1,0 +1,8 @@
+.cpcache/
+.clj-kondo/
+.jolt/
+.jolt-lsp/
+.writ-cache/
+.lsp/
+.nrepl-port
+target/

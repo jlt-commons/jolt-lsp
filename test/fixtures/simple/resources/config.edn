@@ -1,0 +1,2 @@
+{:app.system/store {:state {}}
+ :app.system/handler {:store #ig/ref :app.system/store}}

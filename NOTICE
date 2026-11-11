@@ -1,0 +1,9 @@
+jolt-lsp
+Copyright (c) 2026 jolt-lsp contributors
+
+This product includes software adapted from clojure-lsp
+(https://github.com/clojure-lsp/clojure-lsp), Copyright (c) 2022
+clojure-lsp maintainers, licensed under the MIT License.
+
+Adapted files carry a header naming clojure-lsp as the source. The files
+this project does not adapt are original work.
