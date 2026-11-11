@@ -1,6 +1,6 @@
 (ns demo.core
-  (:require [clojure.set :as set]
-            [clojure.string :as string]))
+  (:require [clojure.string :as string]
+            [clojure.set :as set]))
 
 (defn use-inline
   [x]

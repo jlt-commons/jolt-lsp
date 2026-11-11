@@ -25,7 +25,7 @@
         edges (mapv (juxt :from-ns :to-ns) (or (db/ns-deps-of db ns) []))
         requires (or (db/ns-requires-of db ns) [])]
     (vec
-     (for [[from to rule] (violations rules edges)]
+     (for [[from to _rule] (violations rules edges)]
        (let [req (some #(when (= (:target %) to) %) requires)
              r [(or (:row req) 1) (or (:col req) 1)
                 (or (:end-row req) 1) (or (:end-col req) 1)]]

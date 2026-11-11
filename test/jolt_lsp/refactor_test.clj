@@ -34,7 +34,7 @@
 
 (deftest cycle-auto-keyword
   (let [file (db/file-by-path @index core)
-        k (first (db/keyword-refs-in-file @index (:id file)))]
+        k (some #(when (= ":demo.core/thing" (:fqn %)) %) (db/keyword-refs-in-file @index (:id file)))]
     (is (= ":demo.core/thing" (:fqn k)))
     (let [r (refactor/cycle-keyword @index core (:row k) (:col k))]
       (is (:ok r))

@@ -8,7 +8,8 @@
   (:require [clojure.test :as t]))
 
 (def test-namespaces
-  '[jolt-lsp.smoke-test jolt-lsp.index-test jolt-lsp.extras-test jolt-lsp.refactor-test])
+  '[jolt-lsp.smoke-test jolt-lsp.index-test jolt-lsp.extras-test jolt-lsp.refactor-test
+    jolt-lsp.syntax-test jolt-lsp.replace-test jolt-lsp.review-test])
 
 (defn -main [& _args]
   (apply require test-namespaces)

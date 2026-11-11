@@ -3,7 +3,8 @@
 
   Internal positions are 1-based and count codepoints: [row col]. `end-col`
   is exclusive. LSP positions are 0-based and count UTF-16 code units. Byte
-  offsets are UTF-8. All conversions live here.")
+  offsets are UTF-8. All conversions live here."
+  (:require [clojure.string]))
 
 (defn- codepoint-at [s i]
   (int (nth s i)))
@@ -36,12 +37,12 @@
 (defn line-starts
   "Codepoint offsets of every line start. The first is always 0."
   [s]
-  (reduce (fn [starts i]
-            (if (= \newline (nth s i))
-              (conj starts (inc i))
-              starts))
+  (reduce (fn [acc _]
+            (if-let [i (clojure.string/index-of s "\n" (peek acc))]
+              (conj acc (inc i))
+              (reduced acc)))
           [0]
-          (range (count s))))
+          (range (inc (count s)))))
 
 (defn offset->position
   "Clamped codepoint offset -> 1-based [row col]."

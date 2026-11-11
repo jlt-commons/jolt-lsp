@@ -2,7 +2,7 @@
 
 A language server and agent toolset for Jolt projects.
 
-The engine is one pure library over a relatum database. The MCP server, JSON
+The engine is one pure library over an in-memory index of plain maps. The MCP server, JSON
 CLI, and LSP server are thin transports over it. The primary consumer is a
 coding agent; the editor is the second consumer.
 
@@ -19,8 +19,8 @@ jolt bench     # index benchmark
 jolt dist      # standalone binary at target/jolt-lsp
 ```
 
-During development the `:dev` aliases point at sibling checkouts (`../writ`,
-`../../relatum`), so the tasks work without fetching.
+During development the `:dev` alias points at a sibling `../writ` checkout,
+so the tasks work without fetching.
 
 ## CLI
 
@@ -35,6 +35,8 @@ jolt-lsp --json calls app.core/greet --direction callers --root .
 jolt-lsp --json impact app.util/trimmed --root .
 jolt-lsp --json context app.core --root .
 jolt-lsp --json form src/app/core.clj 10 4 --root .
+jolt-lsp --json check src/app/core.clj --fix --root .
+jolt-lsp --json replace-form src/app/core.clj --old "(trimmed name)" --new "(trim name)" --root .
 jolt-lsp --json rename src/app/core.clj 10 16 trimmed* --root .   # preview
 jolt-lsp --json rename src/app/core.clj 10 16 trimmed* --apply --root .
 jolt-lsp --json clean-ns src/app/core.clj --apply --root .
@@ -66,17 +68,25 @@ The MCP server speaks newline-delimited JSON-RPC over stdio:
 }
 ```
 
-Tools cover index, search, definition, references, hover, symbols,
-diagnostics, call hierarchy, impact, namespace dependencies, forms, context
-packs, rename, clean-ns, add-require, form replace/insert, and batch reads.
-See [docs/AGENT-API.md](docs/AGENT-API.md).
+Tools cover index, search, definition, references, hover (with source),
+symbols, diagnostics, call hierarchy, impact, namespace dependencies and
+cycles, forms, context packs, syntax check and repair, rename, clean-ns,
+add-require, structural form replace/insert, refactors, formatting, and
+batch reads. The index follows the disk, edits return diffs, and an edit
+that would break a readable file is refused. See
+[docs/AGENT-API.md](docs/AGENT-API.md).
+
+It pairs with [jolt-nrepl-mcp](https://github.com/jlt-commons/jolt-nrepl-mcp),
+which uses this library's syntax repair and structural replace for its
+REPL tools.
 
 ## LSP
 
 `jolt-lsp lsp` speaks LSP over stdio. Implemented: definition, references,
 hover, completion, signature help, document and workspace symbols, document
-highlight, selection range, folding, rename, code actions (clean namespace),
-diagnostics, and indent-on-Enter.
+highlight, selection range, folding, rename (with prepare), code actions
+(clean namespace), diagnostics, semantic tokens, code lens, formatting,
+watched-file updates, and indent-on-Enter. Open buffers are what is indexed.
 
 ## Features
 
@@ -84,8 +94,12 @@ diagnostics, and indent-on-Enter.
 - dependency source indexing from Maven JARs and git/local roots
 - namespaces, vars, aliases, refers, requires, imports, keywords, locals
 - definition, references, hover, fuzzy search, document/workspace symbols
-- built-in diagnostics: unresolved namespace/symbol, unused namespace/binding,
-  duplicate require, unused private var
+- built-in diagnostics: syntax errors, unresolved namespace/symbol, unused
+  namespace/refer/binding, duplicate require, unused private var; interop,
+  syntax-quoted and macro arguments are not flagged
+- syntax diagnosis and safe repair (`jolt-lsp.syntax`) and structural,
+  formatting-insensitive find/replace (`jolt-lsp.replace`), dependency-free
+- reader conditionals analyzed for Jolt's features (`:jolt`, `:clj`, `:default`)
 - call hierarchy, transitive impact, namespace dependency graph
 - formatting-preserving rename, clean-ns, add-require, form replace/insert
 - refactors: sort-requires, cycle-keyword, inline-symbol, destructure-keys,
@@ -93,8 +107,9 @@ diagnostics, and indent-on-Enter.
 - whole-file formatting through cljfmt
 - custom linters from project files, and clj-depend-style layer rules
 - semantic tokens, code lens, clj-kondo findings (on by default when installed)
-- tolerant parsing: a broken tail keeps the forms before it
-- analysis cache keyed by file hash, per-file index patching, polling watcher, benchmark
+- tolerant parsing: a broken top-level form is masked, the forms around it index
+- in-memory index of plain maps, parallel analysis (dependencies shallowly),
+  per-file patching, polling watcher, benchmark
 
 Dependency indexing covers Clojure sources in JARs and source roots. Java is
 out of scope for Jolt.
@@ -115,5 +130,5 @@ diagnostic maps.
 
 ## License
 
-MIT. Adapted clojure-lsp code is attributed in [NOTICE](NOTICE) and in each
-adapted file.
+Eclipse Public License 2.0, as across jlt-commons. Adapted clojure-lsp code
+(MIT) is attributed in [NOTICE](NOTICE) and in each adapted file.

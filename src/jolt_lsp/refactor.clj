@@ -6,7 +6,6 @@
             [jolt-lsp.db :as db]
             [jolt-lsp.edit.vedit :as vedit]
             [jolt-lsp.forms :as forms]
-            [jolt-lsp.read-impl :as read]
             [jolt-lsp.text :as text]
             [jolt-lsp.tree :as tree]))
 
@@ -22,22 +21,31 @@
 (defn- single [path edits]
   (preview {path edits}))
 
-(defn- distinct-by [f xs]
-  (vals (reduce (fn [m x] (assoc m (f x) x)) {} xs)))
-
 (defn- node-range= [a b] (= a b))
 
-(defn sort-requires [db path]
+(defn sort-requires
+  "Sort the libspecs of the :require clause, keeping its layout: the first
+  libspec stays where it was and the rest line up under it. A clause with
+  comments is left for a human, since a comment's libspec is ambiguous."
+  [_db path]
   (let [source (slurp path)
-        clause (forms/ns-require-clause source)
-        specs (forms/ns-libspecs source)]
-    (if (and clause (seq specs))
-      (let [sorted (sort-by tree/text specs)
-            indent (apply str (repeat (+ 2 (nth (tree/node-range clause) 1)) " "))
-            text (str "(:require\n" (string/join "\n" (map #(str indent (tree/text %)) sorted)) ")")
-            edit (vedit/range->edit source (tree/node-range clause) text)]
-        (single path [edit]))
-      {:ok true :changed false :reason "no require clause"})))
+        {:keys [clause libspecs]} (forms/ns-parts source)]
+    (cond
+      (not (and clause (seq libspecs)))
+      {:ok true :changed false :reason "no require clause"}
+
+      (some #(= :comment (tree/tag %)) (tree/all-children clause))
+      {:ok false :reason "the require clause has comments; sort it by hand"}
+
+      :else
+      (let [sorted (sort-by #(string/replace (tree/text %) #"^[\[(]" "") libspecs)
+            [r1 c1] (tree/node-range (first libspecs))
+            [_ _ er ec] (tree/node-range (last libspecs))
+            indent (apply str (repeat (dec c1) " "))
+            text (string/join (str "\n" indent) (map tree/text sorted))]
+        (if (= sorted libspecs)
+          {:ok true :changed false :reason "already sorted"}
+          (single path [(vedit/range->edit source [r1 c1 er ec] text)]))))))
 
 (defn- keyword-at [db path row col]
   (let [file (db/file-by-path db path)
@@ -94,8 +102,15 @@
 (defn inline-symbol [db path row col]
   (let [l (local-at db path row col)
         source (slurp path)]
-    (if-not l
+    (cond
+      (not l)
       {:ok false :reason "no local at position"}
+
+      (not (#{:let} (:kind l)))
+      {:ok false :reason (str "only let bindings can be inlined; this is a "
+                              (name (or (:kind l) :binding)))}
+
+      :else
       (let [refs (db/local-refs-by-local-id db (:id l))]
         (if (not= 1 (count refs))
           {:ok false :reason "local is not used exactly once"}
@@ -107,7 +122,7 @@
                                                                 [(:row l) (:col l) (:end-row l) (:end-col l)])
                                                i))
                                            cs)))
-                pat (when (and idx (< (inc idx) (count cs))) (nth cs idx))
+                pat (when (and idx (even? idx) (< (inc idx) (count cs))) (nth cs idx))
                 init (when pat (nth cs (inc idx)))
                 ref (first refs)]
             (if (and pat init ref)
@@ -136,7 +151,9 @@
                                               (let [cs (tree/children n)
                                                     k (first cs)
                                                     target (second cs)]
-                                                (when (and (tree/keyword-node? k)
+                                                (when (and (= 2 (count cs))
+                                                           (tree/keyword-node? k)
+                                                           (not (string/starts-with? (tree/text k) "::"))
                                                            (= (:name l) (tree/text target)))
                                                   {:key (subs (tree/text k) 1)
                                                    :range (tree/node-range n)}))))
@@ -150,8 +167,9 @@
                                                 [(:row l) (:col l) (:end-row l) (:end-col l)]
                                                 (str "{:keys [" (string/join " " keys) "]}"))
                 ref-edits (mapv (fn [{:keys [key range]}]
-                                  (vedit/range->edit source range key))
-                                (distinct-by :key info))]
+                                  (vedit/range->edit source range
+                                                     (last (string/split key #"/"))))
+                                info)]
             (single path (into [binding-edit] ref-edits))))))))
 
 (defn- binding-vector-at [source row col]
@@ -205,7 +223,7 @@
 
           :else nil)))))
 
-(defn restructure-keys [db path row col]
+(defn restructure-keys [_db path row col]
   (let [source (slurp path)
         v (binding-vector-at source row col)
         cs (when v (tree/children v))
@@ -227,7 +245,7 @@
                     groups)]
         (single path (vec edits))))))
 
-(defn move-form [db path row col target-file]
+(defn move-form [_db path row _col target-file]
   (let [source (slurp path)
         forms (forms/top-level-forms source)
         f (some #(when (and (<= (nth (:range %) 0) row)
@@ -243,4 +261,5 @@
                     :end-byte (text/utf8-offset target-old (count target-old))
                     :old-text ""
                     :new-text (str "\n\n" (:text f))}]
-        (preview {path [delete] target-file [append]})))))
+        (assoc (preview {path [delete] target-file [append]})
+               :warning "references to the moved form, and the requires it needs, are not updated")))))

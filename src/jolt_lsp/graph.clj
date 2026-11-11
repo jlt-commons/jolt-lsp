@@ -1,5 +1,6 @@
 (ns jolt-lsp.graph
-  "Pure graph algorithms over edge lists. Fixed-point iteration, no recursion."
+  "Pure graph algorithms over edge lists. Breadth-first over an adjacency
+  map built once per query, so every query is linear in the edges."
   (:require [clojure.set :as set]))
 
 (defn- adjacency [edges]
@@ -8,39 +9,50 @@
 (defn neighbors [edges node]
   (get (adjacency edges) node #{}))
 
-(defn reachable
-  "Nodes reachable from start through the directed edges."
-  [edges start]
-  (let [rounds (inc (count edges))]
-    (reduce (fn [seen _]
-              (into seen (mapcat #(neighbors edges %) seen)))
-            #{start}
-            (range rounds))))
+(defn- bfs
+  "{node distance} for every node reachable from start in adjacency map adj.
+  One round per BFS layer, bounded by the node count, each round touching
+  only its frontier."
+  [adj start]
+  (first
+   (reduce (fn [[dist frontier] _]
+             (if (empty? frontier)
+               (reduced [dist frontier])
+               (reduce (fn [[dist next] u]
+                         (reduce (fn [[dist next] v]
+                                   (if (contains? dist v)
+                                     [dist next]
+                                     [(assoc dist v (inc (get dist u))) (conj next v)]))
+                                 [dist next]
+                                 (get adj u)))
+                       [dist []]
+                       frontier)))
+           [{start 0} [start]]
+           (range (+ 2 (count adj))))))
 
-(defn shortest-distances [edges start]
-  (let [rounds (inc (count edges))]
-    (reduce
-     (fn [dist _]
-       (reduce (fn [d [u v]]
-                 (if (and (contains? d u)
-                          (not (contains? d v)))
-                   (assoc d v (inc (get d u)))
-                   d))
-               dist
-               edges))
-     {start 0}
-     (range rounds))))
+(defn reachable
+  "Nodes reachable from start through the directed edges, start included."
+  [edges start]
+  (set (keys (bfs (adjacency edges) start))))
+
+(defn shortest-distances
+  "{node hops} from start."
+  [edges start]
+  (bfs (adjacency edges) start))
 
 (defn cycles
   "Strongly connected components with more than one node."
   [edges]
-  (let [nodes (set (mapcat identity edges))
-        rev (mapv (fn [[a b]] [b a]) edges)]
-    (->> nodes
-         (keep (fn [start]
-                 (let [reach (reachable edges start)
-                       back (reachable rev start)
-                       scc (set/intersection reach back)]
-                   (when (> (count scc) 1) scc))))
-         distinct
-         vec)))
+  (let [adj (adjacency edges)
+        radj (adjacency (map (fn [[a b]] [b a]) edges))
+        nodes (set (mapcat identity edges))]
+    (second
+     (reduce (fn [[todo out] start]
+               (if-not (contains? todo start)
+                 [todo out]
+                 (let [scc (set/intersection (set (keys (bfs adj start)))
+                                             (set (keys (bfs radj start))))]
+                   [(set/difference todo scc)
+                    (if (> (count scc) 1) (conj out scc) out)])))
+             [nodes []]
+             nodes))))

@@ -6,7 +6,6 @@
   Prints cold and warm index times and query latency."
   (:require [jolt-lsp.db :as db]
             [jolt-lsp.graph.query :as graph]
-            [jolt-lsp.paths :as paths]
             [jolt-lsp.query :as query]))
 
 (defn- ms [f]

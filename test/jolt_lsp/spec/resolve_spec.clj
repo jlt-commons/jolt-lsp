@@ -12,17 +12,14 @@
 
 (spec jolt-lsp.resolve {:require :tested})
 
-(refine VarDef [v {:name String
-                   :ns String
-                   :fqn String
-                   :kind Keyword}] true)
-
 (refine Analysis [a {:ns-name (Opt String)
-                     :vars (List VarDef)
+                     :var-names (Set String)
                      :aliases (Map String String)
                      :refers (Map String String)
-                     :requires (List String)
-                     :core (List String)}] true)
+                     :refer-all (Map String String)
+                     :imports (Map String String)
+                     :requires (Set String)
+                     :core (Set String)}] true)
 
 (refine Resolution [r {:kind Keyword
                        :fqn (Opt String)}] true)
@@ -38,12 +35,13 @@
 
 (defn sample-analysis []
   {:ns-name "app.core"
-   :vars [{:name "f" :ns "app.core" :fqn "app.core/f" :kind :defn}
-          {:name "g" :ns "app.util" :fqn "app.util/g" :kind :defn}]
+   :var-names #{"f"}
    :aliases {"u" "app.util"}
    :refers {"r" "app.util/g"}
-   :requires ["app.util"]
-   :core ["map"]})
+   :refer-all {"h" "app.lib/h"}
+   :imports {"Date" "java.util.Date"}
+   :requires #{"app.util"}
+   :core #{"map"}})
 
 (law current-ns-var
   (= "app.core/f" (:fqn (resolve-name (sample-analysis) "app.core" "f"))))
@@ -56,6 +54,12 @@
 
 (law core-name
   (= :core (:kind (resolve-name (sample-analysis) "app.core" "map"))))
+
+(law refer-all-name
+  (= "app.lib/h" (:fqn (resolve-name (sample-analysis) "app.core" "h"))))
+
+(law imported-class
+  (= :class (:kind (resolve-name (sample-analysis) "app.core" "Date"))))
 
 (law unresolved-name
   (= :unresolved (:kind (resolve-name (sample-analysis) "app.core" "nope"))))

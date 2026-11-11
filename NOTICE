@@ -1,5 +1,6 @@
 jolt-lsp
 Copyright (c) 2026 jolt-lsp contributors
+Licensed under the Eclipse Public License 2.0 (see LICENSE).
 
 This product includes software adapted from clojure-lsp
 (https://github.com/clojure-lsp/clojure-lsp), Copyright (c) 2022
@@ -7,3 +8,13 @@ clojure-lsp maintainers, licensed under the MIT License.
 
 Adapted files carry a header naming clojure-lsp as the source. The files
 this project does not adapt are original work.
+
+jolt-lsp.syntax and jolt-lsp.replace come from jolt-nrepl-mcp and samizdat
+(Copyright (c) 2026 Dmitri Sotnikov). Parts of jolt-lsp.syntax are ported
+from vis internal/parse_diagnose.clj, Copyright 2025-2026 Blockether,
+licensed under the Apache License 2.0; those functions say so in their
+docstrings.
+
+src/parinferish is vendored from oakes/parinferish
+(https://github.com/oakes/parinferish), dedicated to the public domain by
+its author, with one Jolt port change marked inline.

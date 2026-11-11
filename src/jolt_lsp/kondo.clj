@@ -1,7 +1,7 @@
 (ns jolt-lsp.kondo
   "Optional clj-kondo bridge. Uses a native binary when one is on PATH."
   (:require [babashka.fs :as fs]
-            [babashka.process :as p]
+            [clojure.java.shell :as shell]
             [clojure.string :as string]
             [jolt-lsp.json :as json]))
 
@@ -33,7 +33,7 @@
     (try
       (let [cmd (into ["clj-kondo" "--lint"] paths)
             cmd (into cmd ["--config" "{:output {:format :json :canonical-paths true}}"])
-            r (apply p/sh cmd)
+            r (apply shell/sh cmd)
             out (str (:out r))
             data (when-not (string/blank? out) (json/read-json out))]
         (mapv finding->diag (:findings data)))

@@ -6,8 +6,7 @@
 (defn ranges [source]
   (let [parsed (read/parse-text source)]
     (letfn [(walk [node acc]
-              (let [tag (tree/tag node)
-                    txt (when (tree/branch? node) nil)]
+              (let [tag (tree/tag node)]
                 (cond
                   (= :uneval tag) (conj acc (tree/node-range node))
                   (and (= :list tag)

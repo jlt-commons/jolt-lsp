@@ -1,5 +1,5 @@
 (ns jolt-lsp.index-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [babashka.fs :as fs]
             [jolt-lsp.db :as db]
             [jolt-lsp.diagnostics :as diagnostics]

@@ -1,11 +1,9 @@
 (ns jolt-lsp.cli
   "JSON/EDN CLI over the engine. One-shot, or `lsp`/`mcp` for a server."
-  (:require [clojure.edn :as edn]
-            [clojure.pprint :as pp]
+  (:require [clojure.pprint :as pp]
             [clojure.string :as string]
             [jolt-lsp.api :as api]
-            [jolt-lsp.json :as json]
-            [jolt-lsp.paths :as paths]))
+            [jolt-lsp.json :as json]))
 
 (defn- parse-args [args]
   (loop [args args
@@ -17,11 +15,17 @@
         (case a
           "--json" (recur (rest args) (assoc opts :json true) pos)
           "--apply" (recur (rest args) (assoc opts :apply true) pos)
+          "--fix" (recur (rest args) (assoc opts :fix true) pos)
+          "--every" (recur (rest args) (assoc opts :every true) pos)
+          "--refresh" (recur (rest args) (assoc opts :refresh true) pos)
+          "--code" (recur (rest (rest args)) (assoc opts :code (second args)) pos)
+          "--before" (recur (rest (rest args)) (assoc opts :before (second args)) pos)
+          "--occurrence" (recur (rest (rest args)) (assoc opts :occurrence (parse-long (second args))) pos)
           "--all" (recur (rest args) (assoc opts :all true) pos)
           "--kondo" (recur (rest args) (assoc opts :kondo true) pos)
           "--no-kondo" (recur (rest args) (assoc opts :kondo false) pos)
           "--root" (recur (rest (rest args)) (assoc opts :root (second args)) pos)
-          "--limit" (recur (rest (rest args)) (assoc opts :limit (read-string (second args))) pos)
+          "--limit" (recur (rest (rest args)) (assoc opts :limit (parse-long (second args))) pos)
           "--direction" (recur (rest (rest args)) (assoc opts :direction (keyword (second args))) pos)
           "--alias" (recur (rest (rest args)) (assoc opts :alias (second args)) pos)
           "--old" (recur (rest (rest args)) (assoc opts :old-form (second args)) pos)
@@ -41,8 +45,8 @@
 (defn- pos-args [opts]
   (let [[file line col & more] (:pos opts)]
     {:file file
-     :line (when line (read-string line))
-     :col (when col (read-string col))
+     :line (some-> line parse-long)
+     :col (some-> col parse-long)
      :rest more}))
 
 (defn run [args]
@@ -53,14 +57,21 @@
         usage (fn []
                 (println "usage: jolt-lsp <command> [options]")
                 (println "commands: index refresh search def refs hover symbols diagnostics calls impact")
-                (println "          deps form context rename clean-ns add-require replace-form insert-form")
-                (println "          format new-file-ns ignored-forms lsp mcp"))]
+                (println "          deps form context check rename clean-ns add-require replace-form")
+                (println "          insert-form refactor format new-file-ns ignored-forms lsp mcp")
+                (println "options:  --json --root DIR --apply --all --kondo --no-kondo --limit N")
+                (println "          --direction D --alias A --old FORM --new TEXT --after FORM")
+                (println "          --before FORM --occurrence N --every --fix --code TEXT --target-file F"))]
     (cond
-      (= cmd "index") (show opts (assoc (api/index-status r) :command "index"))
+      (= cmd "index") (show opts (do (when (:refresh opts) (api/refresh! r))
+                                     (assoc (api/index-status r) :command "index")))
       (= cmd "refresh") (show opts (do (api/refresh! r) (api/index-status r)))
       (= cmd "search") (show opts (api/search r {:query (first (:pos opts)) :limit (:limit opts)}))
       (= cmd "def") (show opts (api/definition r {:file file :line line :col col}))
-      (= cmd "refs") (show opts (api/references r {:symbol (first (:pos opts))}))
+      (= cmd "refs") (show opts (if (and file line col)
+                                  (api/references r {:file file :line line :col col})
+                                  (api/references r {:symbol (first (:pos opts))})))
+      (= cmd "check") (show opts (api/check r {:file file :code (:code opts) :fix (:fix opts)}))
       (= cmd "hover") (show opts (if (and file line col)
                                    (api/hover r {:file file :line line :col col})
                                    (api/hover r {:symbol (first (:pos opts))})))
@@ -72,7 +83,11 @@
       (= cmd "deps") (show opts (api/deps r {:ns (first (:pos opts))
                                              :direction (or (:direction opts) :dependencies)}))
       (= cmd "form") (show opts (api/form r {:file file :line line :col col}))
-      (= cmd "context") (show opts (api/context r {:ns (first (:pos opts)) :file file}))
+      (= cmd "context") (show opts (if (and file (string/includes? file "."))
+                                     (if (re-find #"\.(clj|cljc|edn)$" file)
+                                       (api/context r {:file file})
+                                       (api/context r {:ns file}))
+                                     (api/context r {:ns file})))
       (= cmd "new-file-ns") (show opts (api/new-file-ns r {:file file}))
       (= cmd "ignored-forms") (show opts (api/ignored-forms r {:file file}))
       (= cmd "rename") (show opts (api/rename* r {:path file :row line :col col
@@ -82,12 +97,16 @@
                                                             :alias (:alias opts) :apply (:apply opts)}))
       (= cmd "replace-form") (show opts (api/replace-form* r {:file file :old-form (:old-form opts)
                                                               :new-text (:new-text opts)
+                                                              :occurrence (:occurrence opts)
+                                                              :all (:every opts)
                                                               :apply (:apply opts)}))
       (= cmd "insert-form") (show opts (api/insert-form* r {:file file :after (:after opts)
+                                                            :before (:before opts)
+                                                            :occurrence (:occurrence opts)
                                                             :new-text (:new-text opts)
                                                             :apply (:apply opts)}))
       (= cmd "format") (show opts (api/format* r {:file file :apply (:apply opts)}))
-      (= cmd "refactor") (let [[kind file* line* col* & more] (:pos opts)]
+      (= cmd "refactor") (let [[kind file* line* col*] (:pos opts)]
                            (show opts (api/refactor* r {:kind kind
                                                         :file file*
                                                         :line (when line* (read-string line*))
@@ -100,6 +119,9 @@
 (defn -main [& args]
   (try
     (run args)
+    ;; analysis runs on futures: let their pool go
+    (shutdown-agents)
+    (System/exit 0)
     (catch Throwable e
       (binding [*out* *err*]
         (println (json/write {:ok false :error (str e)})))

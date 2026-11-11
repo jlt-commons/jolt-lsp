@@ -10,6 +10,7 @@
 
 (ann range->edit [String (Tuple Nat Nat Nat Nat) String -> Edit])
 (ann apply-edits [String (List Edit) -> String])
+(ann offsets->edit [String Nat Nat String -> Edit])
 
 (graph editing
   {:start :text
@@ -55,3 +56,12 @@
 (law zero-range-inserts
   (forall [s String, t String]
     (= (str t s) (apply-edits s [(range->edit s [1 1 1 1] t)]))))
+
+(law offsets-edit-inserts
+  (forall [s String, n Nat, t String]
+    (=> (<= n (count s))
+        (= (str (subs s 0 n) t (subs s n))
+           (apply-edits s [(offsets->edit s n n t)])))))
+
+(law offsets-edit-concrete
+  (= "aXc" (apply-edits "abc" [(offsets->edit "abc" 1 2 "X")])))

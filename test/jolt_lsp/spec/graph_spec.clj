@@ -55,3 +55,7 @@
 (law dag-has-no-cycle
   (forall [a String, b String]
     (empty? (cycles [[a b]]))))
+
+(law no-edges-only-start
+  (forall [s String]
+    (= #{s} (reachable [] s))))

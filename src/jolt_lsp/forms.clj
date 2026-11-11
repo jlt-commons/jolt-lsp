@@ -93,6 +93,20 @@
               n))
           (rest (tree/children ns)))))
 
+(defn ns-parts
+  "The ns form, its :require clause and that clause's libspecs, from one
+  parse, so the nodes can be compared by identity."
+  [source]
+  (when-let [ns (ns-form source)]
+    (let [clause (some (fn [n]
+                         (when (and (= :list (tree/tag n))
+                                    (= ":require" (some-> (first (tree/children n)) tree/text)))
+                           n))
+                       (rest (tree/children ns)))]
+      {:ns ns
+       :clause clause
+       :libspecs (if clause (vec (rest (tree/children clause))) [])})))
+
 (defn ns-libspecs [source]
   (when-let [clause (ns-require-clause source)]
     (vec (rest (tree/children clause)))))

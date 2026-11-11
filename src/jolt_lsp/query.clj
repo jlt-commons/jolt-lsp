@@ -1,10 +1,9 @@
 (ns jolt-lsp.query
-  "Read-side engine queries over the relatum index."
+  "Read-side engine queries over the index."
   (:require [clojure.string :as string]
             [jolt-lsp.cursor :as cursor]
             [jolt-lsp.db :as db]
-            [jolt-lsp.diagnostics :as diagnostics]
-            [relatum.core :as rc]))
+            [jolt-lsp.diagnostics :as diagnostics]))
 
 (defn pos-in? [row col r]
   (when r
@@ -61,13 +60,25 @@
             r))
         rows))
 
+(defn token-at
+  "The symbol or keyword at row/col, or just before it (a cursor sitting
+  right after a name, as editors and agents often place it)."
+  [text row col]
+  (or (cursor/symbol-at text row col)
+      (when (> col 1)
+        (when-let [t (cursor/symbol-at text row (dec col))]
+          (assoc t :col-adjusted true)))))
+
 (defn definition-at
-  "Definition for the symbol at a 1-based row/col in `path`."
-  [db path row col]
+  "Definition for the symbol at a 1-based row/col in `path`. `source` is
+  the file's current text when it is not what is on disk."
+  ([db path row col] (definition-at db path row col nil))
+  ([db path row col source]
   (let [file (db/file-by-path db path)
         fid (:id file)
-        text (try (slurp path) (catch Throwable _ ""))
-        token (cursor/symbol-at text row col)]
+        text (or source (try (slurp (:path file path)) (catch Throwable _ "")))
+        token (token-at text row col)
+        col (if (:col-adjusted token) (dec col) col)]
     (cond
       (:keyword token)
       (let [kr (row-at (db/keyword-refs-in-file db fid) row col)
@@ -95,7 +106,7 @@
          [(var-location db vd)])
        [])
 
-      :else [])))
+      :else []))))
 
 (defn references
   "Every site that names `fqn`, plus its definition."
@@ -133,6 +144,29 @@
        (take (or limit 50))
        vec))
 
+(def ^:private max-source-lines 80)
+
+(defn source-text
+  "The text of a var's whole definition form, capped at
+  max-source-lines lines."
+  [db v]
+  (try
+    (let [text (slurp (file-path db (:file-id v)))
+          lines (string/split text #"\n" -1)
+          from (dec (:row v))
+          to (min (:end-row v) (+ from max-source-lines))
+          body (subvec lines from to)
+          body (assoc body 0 (subs (first body) (min (count (first body)) (dec (:col v)))))
+          last-i (dec (count body))
+          body (if (= to (:end-row v))
+                 (update body last-i #(subs % 0 (min (count %)
+                                                    (if (zero? last-i)
+                                                      (- (:end-col v) (:col v))
+                                                      (dec (:end-col v))))))
+                 (conj body (str ";; ... " (- (:end-row v) to) " more lines")))]
+      (string/join "\n" body))
+    (catch Throwable _ nil)))
+
 (defn hover
   [db fqn]
   (when-let [v (db/var-by-fqn db fqn)]
@@ -140,7 +174,8 @@
            :doc (:doc v)
            :arglists (:arglists v)
            :private (:private v)
-           :defined-by (:defined-by v))))
+           :defined-by (:defined-by v)
+           :code (source-text db v))))
 
 (defn document-symbols [db path]
   (when-let [file (db/file-by-path db path)]
@@ -167,3 +202,15 @@
      :dependencies (mapv :to-ns deps)
      :dependents (mapv :from-ns dependents)
      :diagnostics (when file (diagnostics/file-diagnostics db (:path file)))}))
+
+(defn file-ns-summary
+  "Requires, aliases and refers of the file at path, for an agent about to
+  edit it."
+  [db path]
+  (when-let [f (db/file-by-path db path)]
+    {:ns (:ns f)
+     :requires (mapv #(cond-> {:ns (:target %)}
+                        (:alias %) (assoc :alias (:alias %))
+                        (:refer-all %) (assoc :refer :all))
+                     (db/file-requires db path))
+     :refers (into (sorted-map) (map (juxt :name :target)) (db/file-refers db path))}))
