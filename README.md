@@ -130,5 +130,7 @@ diagnostic maps.
 
 ## License
 
-Eclipse Public License 2.0, as across jlt-commons. Adapted clojure-lsp code
+Eclipse Public License 2.0, as across jlt-commons, with GPL-2.0-or-later
+(with the Classpath Exception) named as a Secondary License so GPL projects
+can depend on it; see [NOTICE](NOTICE). Adapted clojure-lsp code
 (MIT) is attributed in [NOTICE](NOTICE) and in each adapted file.
