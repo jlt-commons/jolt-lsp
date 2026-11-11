@@ -22,6 +22,19 @@ from vis internal/parse_diagnose.clj, Copyright 2025-2026 Blockether,
 licensed under the Apache License 2.0; those functions say so in their
 docstrings.
 
+src/jolt_lsp/surgeon comes from samizdat (Copyright (c) 2026 Dmitri
+Sotnikov), which adapted it from clj-surgeon
+(https://github.com/realgenekim/clj-surgeon, commit affdfe3), Copyright (c)
+2026 Gene Kim, and from xi (https://github.com/floscr/xi, commit 1701ddd),
+Copyright (c) 2026 Florian Schroedl, both under the MIT License; see
+docs/third-party/clj-surgeon-LICENSE and docs/third-party/xi-LICENSE.
+
+src/jolt_lsp/sdiff comes from samizdat, which adapted it from sdiff
+(https://github.com/semantic-namespace/diff, commit 70e436e), Copyright (c)
+2026 @tangrammer, under the MIT License; see docs/third-party/sdiff-LICENSE.
+
+Each of those files carries a header naming its source.
+
 src/parinferish is vendored from oakes/parinferish
 (https://github.com/oakes/parinferish), dedicated to the public domain by
 its author, with one Jolt port change marked inline.

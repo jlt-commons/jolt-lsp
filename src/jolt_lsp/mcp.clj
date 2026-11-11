@@ -124,6 +124,26 @@ navigation over a project index, diagnostics, refactors, and syntax repair.
                        :file file-prop :line line-prop :col col-prop
                        :target_file {:type "string"} :apply apply-prop}
                       ["kind" "file"])}
+   {:name "jolt_structural_diff"
+    :description "What changed in a Clojure file, by form and by where inside it: behaviour changes told apart from renames, extractions, moves, wrapping and comment- or whitespace-only edits, with changed forms grouped by the calls between them. Old side: old (text), old_file, or the file at git rev (default HEAD); new side: new (text) or the file on disk."
+    :inputSchema (obj {:root root-prop :file file-prop
+                       :old {:type "string"} :old_file {:type "string"}
+                       :rev {:type "string" :description "git revision for the old side (default HEAD)"}
+                       :new {:type "string"}}
+                      ["file"])}
+   {:name "jolt_rename_namespace"
+    :description "Rename a namespace (or a namespace prefix): its files move to the paths the new name implies, and every ns form, require and qualified reference in the project follows."
+    :inputSchema (obj {:root root-prop :from {:type "string"} :to {:type "string"} :apply apply-prop}
+                      ["from" "to"])}
+   {:name "jolt_fix_declares"
+    :description "Remove declares a file no longer needs by moving each definition above its first use; a declare that breaks a real cycle stays."
+    :inputSchema (obj {:root root-prop :file file-prop :apply apply-prop} ["file"])}
+   {:name "jolt_extract"
+    :description "Move named top-level forms of a file, with the private helpers only they use, into a namespace (created at the path its name implies). Returns the files that still call a moved var, from the index, so their requires can be updated."
+    :inputSchema (obj {:root root-prop :file file-prop
+                       :forms {:type "array" :items {:type "string"}}
+                       :to_ns {:type "string"} :apply apply-prop}
+                      ["file" "forms" "to_ns"])}
    {:name "jolt_format"
     :description "Format a whole file with cljfmt and the project's .cljfmt.edn."
     :inputSchema (obj {:root root-prop :file file-prop :apply apply-prop} ["file"])}
@@ -137,7 +157,7 @@ navigation over a project index, diagnostics, refactors, and syntax repair.
 (def ^:private read-only
   #{"jolt_index" "jolt_search" "jolt_definition" "jolt_references" "jolt_hover"
     "jolt_symbols" "jolt_diagnostics" "jolt_call_hierarchy" "jolt_impact"
-    "jolt_deps" "jolt_form" "jolt_context"})
+    "jolt_deps" "jolt_form" "jolt_context" "jolt_structural_diff"})
 
 (defn- norm-args [m]
   (into {}
@@ -170,6 +190,10 @@ navigation over a project index, diagnostics, refactors, and syntax repair.
       "jolt_insert_form" (api/insert-form* root a)
       "jolt_refactor" (api/refactor* root a)
       "jolt_format" (api/format* root a)
+      "jolt_structural_diff" (api/structural-diff root a)
+      "jolt_rename_namespace" (api/rename-namespace* root a)
+      "jolt_fix_declares" (api/fix-declares* root a)
+      "jolt_extract" (api/extract* root a)
       "jolt_batch" {:results
                     (mapv (fn [{:keys [tool args]}]
                             (if (contains? read-only tool)

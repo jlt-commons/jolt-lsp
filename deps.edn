@@ -3,7 +3,9 @@
 
  :deps
  {;; cljfmt brings rewrite-clj; JSON is Jolt's built-in clojure.data.json
-  dev.weavejester/cljfmt  {:mvn/version "0.13.1"}}
+  dev.weavejester/cljfmt  {:mvn/version "0.13.1"}
+  ;; the node tree jolt-lsp.surgeon and jolt-lsp.sdiff rewrite and compare
+  rewrite-clj/rewrite-clj {:mvn/version "1.3.59"}}
 
  :aliases
  {;; jolt test

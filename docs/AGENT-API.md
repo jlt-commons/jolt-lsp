@@ -44,6 +44,10 @@ returns `{:ok false :candidates [...]}`. Paths may be relative to `root`.
 | `jolt_insert_form` | `file`, `new_text`, `after?`/`before?`, `occurrence?`, `apply?` |
 | `jolt_refactor` | `kind` (`sort-requires`, `cycle-keyword`, `inline-symbol`, `destructure-keys`, `restructure-keys`, `move-form`), `file`, `line?`, `col?`, `target_file?`, `apply?` |
 | `jolt_format` | `file`, `apply?` |
+| `jolt_structural_diff` | `file`, `old?` / `old_file?` / `rev?` (default `HEAD`), `new?` — forms changed, by where in the form, grouped by calls |
+| `jolt_rename_namespace` | `from`, `to`, `apply?` — moves the files too; returns `moves`, `created`, `deleted` |
+| `jolt_fix_declares` | `file`, `apply?` |
+| `jolt_extract` | `file`, `forms: [name]`, `to_ns`, `apply?` — returns `target` and `callers` still naming the old place |
 | `jolt_batch` | `ops: [{:tool, :args}]` — read-only tools only; `root` is passed down |
 
 Every tool returns one text block holding JSON; a result with `ok: false`
@@ -85,7 +89,8 @@ around it are kept, and `jolt_diagnostics` reports a `syntax-error`.
 `index`, `refresh`, `search`, `def`, `refs`, `hover`, `symbols`,
 `diagnostics`, `calls`, `impact`, `deps`, `form`, `context`, `check`, `rename`,
 `clean-ns`, `add-require`, `replace-form`, `insert-form`, `refactor`,
-`format`, `java`, `new-file-ns`, `ignored-forms`, plus `lsp` and `mcp`.
+`format`, `java`, `new-file-ns`, `ignored-forms`, `structural-diff`,
+`rename-ns`, `fix-declares`, `extract`, plus `lsp` and `mcp`.
 
 ## Recommended agent flow
 
@@ -96,3 +101,6 @@ around it are kept, and `jolt_diagnostics` reports a `syntax-error`.
 5. `jolt_rename`, `jolt_clean_ns`, `jolt_add_require`, `jolt_replace_form`,
    `jolt_refactor` with preview, inspect, then apply.
 6. `jolt_check` on text you wrote by hand, `jolt_diagnostics` on the file.
+7. `jolt_structural_diff` on what you changed before you call it done: it
+   says which forms changed behaviour and which only moved, were renamed or
+   reformatted.

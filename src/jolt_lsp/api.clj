@@ -19,13 +19,21 @@
             [jolt-lsp.format :as fmt]
             [jolt-lsp.forms :as forms]
             [jolt-lsp.generate]
+            [jolt-lsp.git :as git]
             [jolt-lsp.graph.query :as graph]
             [jolt-lsp.ignored]
             [jolt-lsp.kondo :as kondo]
             [jolt-lsp.query :as query]
             [jolt-lsp.refactor :as refactor]
             [jolt-lsp.replace :as replace]
+            [jolt-lsp.sdiff.core :as sdiff]
+            [jolt-lsp.sdiff.edn :as sdiff-edn]
+            [jolt-lsp.sdiff.group :as sdiff-group]
+            [jolt-lsp.sdiff.text :as sdiff-text]
             [jolt-lsp.settings :as settings]
+            [jolt-lsp.surgeon.extract :as extract]
+            [jolt-lsp.surgeon.fix-declares :as fix-declares]
+            [jolt-lsp.surgeon.rename :as ns-rename]
             [jolt-lsp.syntax :as syntax]
             [jolt-lsp.text :as text]
             [jolt-lsp.text.index :as tix]))
@@ -500,3 +508,154 @@
 (defn format* [root opts]
   (let [path (resolve-path root (:file opts))]
     (finish root opts (fmt/format-file (root-for root) path))))
+
+;; ---------------------------------------------------------------------------
+;; structural diff
+
+(defn- relative [root path]
+  (str (fs/relativize (fs/path (root-for root)) (fs/path path))))
+
+(defn structural-diff
+  "What changed in a Clojure file, by form and by where in the form: renames,
+  extractions, moves, wrapping, comment-only and whitespace-only edits told
+  apart from changes in behaviour. The old side is `:old` (text), `:old-file`,
+  or the file at git revision `:rev` (default HEAD); the new side is `:new`
+  (text) or the file on disk."
+  [root opts]
+  (let [file (resolve-path root (:file opts))
+        new (if (contains? opts :new) (str (:new opts)) (if (fs/exists? file) (slurp file) ""))
+        old (cond (contains? opts :old) (str (:old opts))
+                  (:old-file opts) (slurp (resolve-path root (:old-file opts)))
+                  :else (git/show (root-for root) (or (:rev opts) "HEAD") file))]
+    (if (nil? old)
+      {:ok false :reason "no old text: pass old or old-file, or work inside a git repository"}
+      (let [{:keys [files renames]} (sdiff/rollup-renames [(sdiff/file-report (relative root file) old new)])
+            report {:clj files :renames renames}]
+        {:ok true
+         :file (relative root file)
+         :verdict (:verdict (first files))
+         :renames renames
+         :groups (select-keys (sdiff-group/by-calls report) [:groups :shared :singles])
+         :text (string/trim (sdiff-text/report-text report))
+         :forms (:forms (sdiff-edn/file->edn (first files)))}))))
+
+;; ---------------------------------------------------------------------------
+;; project restructuring: plans over the project's sources, applied whole
+
+(defn- project-sources
+  "{root-relative path text} of the project's own Clojure files."
+  [root d]
+  (into {} (for [f (db/all-files d)
+                 :when (and (not (:external f)) (#{:clj :cljc} (:dialect f)))]
+             [(relative root (:path f)) (slurp (:path f))])))
+
+(defn- finish-plan
+  "Preview, check and optionally apply a plan's whole-file results.
+  `futures` is {relative path text}, `deleted` relative paths to remove.
+  `:texts true` in opts adds :texts, the new text of every changed file, for
+  a library caller that publishes the change itself."
+  [root opts futures deleted extra]
+  (let [abs #(resolve-path root %)
+        old-of (fn [p] (let [f (abs p)] (if (fs/exists? f) (slurp f) "")))
+        changed (into {} (remove (fn [[p text]] (= text (old-of p)))) futures)
+        broken (some (fn [[p text]]
+                       (when-let [d (if (fs/exists? (abs p)) (broken-by (old-of p) text) (syntax/diagnose text))]
+                         {:file p :problem (:reason d) :note (syntax/explain d)
+                          :line (:line d) :col (:col d)}))
+                     changed)]
+    (if broken
+      (merge extra {:ok false :reason "the change would leave a file unreadable; nothing written"} broken)
+      (let [apply? (and (:apply opts) (or (seq changed) (seq deleted)))]
+        (when apply?
+          (doseq [[p text] changed]
+            (fs/create-dirs (fs/parent (abs p)))
+            (spit (abs p) text))
+          (doseq [p deleted] (fs/delete-if-exists (abs p)))
+          (refresh! root))
+        (cond-> (merge extra
+               {:ok true
+                :changed (boolean (or (seq changed) (seq deleted)))
+                :applied (boolean apply?)
+                :files (vec (sort (keys changed)))
+                :created (vec (sort (remove #(fs/exists? (abs %)) (keys changed))))
+                :deleted (vec (sort deleted))
+                :diff (into {} (for [[p text] changed
+                                     :let [old (old-of p)]]
+                                 [p (diff/diff old [(whole-edit old text)])]))})
+          (:texts opts) (assoc :texts changed))))))
+
+(defn- plan-error [plan]
+  (when-let [t (or (:error-type plan) (:error plan))]
+    (merge {:ok false :reason (str (name t))}
+           (dissoc plan :error-type :error))))
+
+(defn- caller-decisions
+  "Which files that mention a moved var are its callers, from the index: a
+  file with a reference to one of `fqns` is :review-required (it still names
+  the old place), any other file :not-a-caller."
+  [d root fqns]
+  (let [callers (set (for [fqn fqns r (db/refs-by-fqn d fqn)
+                           :let [f (db/file-by-id d (:file-id r))]
+                           :when f]
+                       (relative root (:path f))))]
+    (fn [files] (into {} (for [f files] [f (if (callers f) :review-required :not-a-caller)])))))
+
+(defn rename-namespace*
+  "Rename namespace `:from` to `:to`: its file moves to the path the new name
+  implies, and every ns form, require and qualified reference in the project
+  follows."
+  [root opts]
+  (let [d (ensure-db root)
+        sources (project-sources root d)
+        base {:sources sources :from (symbol (str (:from opts))) :to (symbol (str (:to opts)))}
+        first-try (ns-rename/compile-plan base)
+        plan (if (= :caller-disposition-required (:error-type first-try))
+               (ns-rename/compile-plan
+                (assoc base :caller-decisions
+                       (into {} (for [f (get-in first-try [:caller-proof :unknown-callers])]
+                                  [f :review-required]))))
+               first-try)]
+    (or (plan-error plan)
+        (finish-plan root opts (:future-sources plan) (:deleted-files plan)
+                     {:moves (:file-moves plan)}))))
+
+(defn fix-declares*
+  "Remove `declare`s a file no longer needs by moving each definition above
+  its first use; declares that break a real cycle stay."
+  [root opts]
+  (let [file (resolve-path root (:file opts))
+        rel (relative root file)
+        plan (fix-declares/plan-fix (slurp file) rel)]
+    (or (plan-error plan)
+        (finish-plan root opts {rel (:future-source plan)} []
+                     {:summary (:summary plan) :needed-declares (:needed-declares plan)}))))
+
+(defn extract*
+  "Move the named top-level `:forms` of `:file`, with the private helpers only
+  they use, into namespace `:to-ns` (created at the path it implies). Files
+  the index shows still calling a moved var are listed as callers to update."
+  [root opts]
+  (let [d (ensure-db root)
+        file (resolve-path root (:file opts))
+        rel (relative root file)
+        src-ns (:ns (db/file-by-path d file))
+        to-ns (str (:to-ns opts))
+        to (str (or (some-> (fs/parent rel) str (string/split #"/") first) "src") "/"
+                (-> to-ns (string/replace "-" "_") (string/replace "." "/")) ".clj")
+        names (mapv symbol (:forms opts))
+        sources (assoc (project-sources root d) to (get (project-sources root d) to))
+        decide (caller-decisions d root (map #(str src-ns "/" %) names))
+        base {:file rel :sources sources :forms names :to to :target-ns to-ns
+              :derive-required-public-forms true}
+        first-try (extract/compile-plan base)
+        plan (if (= :caller-disposition-required (:error-type first-try))
+               (extract/compile-plan
+                (assoc base :caller-decisions
+                       (decide (get-in first-try [:caller-proof :unknown-callers]))))
+               first-try)]
+    (or (plan-error plan)
+        (finish-plan root opts (:future-sources plan) []
+                     {:target to
+                      :callers (vec (sort (keep (fn [[f v]] (when (= :review-required v) f))
+                                                (get-in plan [:caller-proof :dispositions]))))}))))
+

@@ -31,6 +31,8 @@
           "--old" (recur (rest (rest args)) (assoc opts :old-form (second args)) pos)
           "--new" (recur (rest (rest args)) (assoc opts :new-text (second args)) pos)
           "--after" (recur (rest (rest args)) (assoc opts :after (second args)) pos)
+          "--rev" (recur (rest (rest args)) (assoc opts :rev (second args)) pos)
+          "--to-ns" (recur (rest (rest args)) (assoc opts :to-ns (second args)) pos)
           "--target-file" (recur (rest (rest args)) (assoc opts :target-file (second args)) pos)
           (recur (rest args) opts (conj pos a)))))))
 
@@ -58,10 +60,12 @@
                 (println "usage: jolt-lsp <command> [options]")
                 (println "commands: index refresh search def refs hover symbols diagnostics calls impact")
                 (println "          deps form context check rename clean-ns add-require replace-form")
-                (println "          insert-form refactor format new-file-ns ignored-forms lsp mcp")
+                (println "          insert-form refactor format new-file-ns ignored-forms structural-diff")
+                (println "          rename-ns fix-declares extract lsp mcp")
                 (println "options:  --json --root DIR --apply --all --kondo --no-kondo --limit N")
                 (println "          --direction D --alias A --old FORM --new TEXT --after FORM")
-                (println "          --before FORM --occurrence N --every --fix --code TEXT --target-file F"))]
+                (println "          --before FORM --occurrence N --every --fix --code TEXT --target-file F")
+                (println "          --rev REV --to-ns NS"))]
     (cond
       (= cmd "index") (show opts (do (when (:refresh opts) (api/refresh! r))
                                      (assoc (api/index-status r) :command "index")))
@@ -113,6 +117,12 @@
                                                         :col (when col* (read-string col*))
                                                         :target-file (:target-file opts)
                                                         :apply (:apply opts)})))
+      (= cmd "structural-diff") (show opts (api/structural-diff r {:file file :rev (:rev opts)}))
+      (= cmd "rename-ns") (show opts (api/rename-namespace* r {:from (first (:pos opts)) :to (second (:pos opts))
+                                                               :apply (:apply opts)}))
+      (= cmd "fix-declares") (show opts (api/fix-declares* r {:file file :apply (:apply opts)}))
+      (= cmd "extract") (show opts (api/extract* r {:file file :forms (vec (drop 1 (:pos opts)))
+                                                    :to-ns (:to-ns opts) :apply (:apply opts)}))
       (contains? #{"help" "--help" "-h"} cmd) (usage)
       :else (do (usage) (System/exit (if cmd 1 0))))))
 

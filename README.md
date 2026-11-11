@@ -47,6 +47,10 @@ jolt-lsp --json refactor destructure-keys src/app/core.clj 12 9 --root .
 jolt-lsp --json refactor restructure-keys src/app/core.clj 12 9 --root .
 jolt-lsp --json format src/app/core.clj --apply --root .
 jolt-lsp --json java java.util.Date --root .
+jolt-lsp --json structural-diff src/app/core.clj --rev HEAD --root .
+jolt-lsp --json rename-ns app.util app.text --apply --root .
+jolt-lsp --json fix-declares src/app/core.clj --root .
+jolt-lsp --json extract src/app/core.clj greet --to-ns app.greeting --root .
 ```
 
 Positions are 1-based line/column. Locations include 1-based ranges, LSP
@@ -71,8 +75,9 @@ The MCP server speaks newline-delimited JSON-RPC over stdio:
 Tools cover index, search, definition, references, hover (with source),
 symbols, diagnostics, call hierarchy, impact, namespace dependencies and
 cycles, forms, context packs, syntax check and repair, rename, clean-ns,
-add-require, structural form replace/insert, refactors, formatting, and
-batch reads. The index follows the disk, edits return diffs, and an edit
+add-require, structural form replace/insert, refactors, namespace rename
+with file moves, extraction into a new namespace, declare cleanup,
+structural diff, formatting, and batch reads. The index follows the disk, edits return diffs, and an edit
 that would break a readable file is refused. See
 [docs/AGENT-API.md](docs/AGENT-API.md).
 
@@ -104,6 +109,12 @@ watched-file updates, and indent-on-Enter. Open buffers are what is indexed.
 - formatting-preserving rename, clean-ns, add-require, form replace/insert
 - refactors: sort-requires, cycle-keyword, inline-symbol, destructure-keys,
   restructure-keys, move-form
+- project restructuring: rename a namespace (files move with it), extract
+  forms into a new namespace, drop declares a reordering makes unneeded
+  (`jolt-lsp.surgeon`, from clj-surgeon by way of samizdat)
+- structural diff (`jolt-lsp.sdiff`, from sdiff): changes by form and by
+  where in the form, renames, extractions and moves told apart from
+  behaviour changes, changed forms grouped by the calls between them
 - whole-file formatting through cljfmt
 - custom linters from project files, and clj-depend-style layer rules
 - semantic tokens, code lens, clj-kondo findings (on by default when installed)
@@ -132,5 +143,6 @@ diagnostic maps.
 
 Eclipse Public License 2.0, as across jlt-commons, with GPL-2.0-or-later
 (with the Classpath Exception) named as a Secondary License so GPL projects
-can depend on it; see [NOTICE](NOTICE). Adapted clojure-lsp code
-(MIT) is attributed in [NOTICE](NOTICE) and in each adapted file.
+can depend on it; see [NOTICE](NOTICE). Adapted MIT code (clojure-lsp,
+clj-surgeon, xi, sdiff) is attributed in [NOTICE](NOTICE), in
+[docs/third-party](docs/third-party) and in each adapted file.
