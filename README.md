@@ -51,6 +51,9 @@ jolt-lsp --json structural-diff src/app/core.clj --rev HEAD --root .
 jolt-lsp --json rename-ns app.util app.text --apply --root .
 jolt-lsp --json fix-declares src/app/core.clj --root .
 jolt-lsp --json extract src/app/core.clj greet --to-ns app.greeting --root .
+jolt-lsp --json deps-list --root .
+jolt-lsp --json deps-grep 'defn reformat-string' --library cljfmt --glob '*.cljc' --root .
+jolt-lsp --json deps-read --library cljfmt cljfmt/core.cljc --offset 640 --limit 20 --root .
 ```
 
 Positions are 1-based line/column. Locations include 1-based ranges, LSP
@@ -77,7 +80,8 @@ symbols, diagnostics, call hierarchy, impact, namespace dependencies and
 cycles, forms, context packs, syntax check and repair, rename, clean-ns,
 add-require, structural form replace/insert, refactors, namespace rename
 with file moves, extraction into a new namespace, declare cleanup,
-structural diff, formatting, and batch reads. The index follows the disk, edits return diffs, and an edit
+structural diff, formatting, searching and reading the source of the
+project's dependencies, and batch reads. The index follows the disk, edits return diffs, and an edit
 that would break a readable file is refused. See
 [docs/AGENT-API.md](docs/AGENT-API.md).
 
@@ -116,6 +120,10 @@ watched-file updates, and indent-on-Enter. Open buffers are what is indexed.
   where in the form, renames, extractions and moves told apart from
   behaviour changes, changed forms grouped by the calls between them
 - whole-file formatting through cljfmt
+- dependency source search and read (`jolt_deps_list`, `jolt_deps_grep`,
+  `jolt_deps_read`, adapted from clojure-mcp): only the libraries the
+  project resolves to, git checkouts and local roots in place, Maven JARs
+  unpacked into the cache; ripgrep when installed, a regex scan otherwise
 - custom linters from project files, and clj-depend-style layer rules
 - semantic tokens, code lens, clj-kondo findings (on by default when installed)
 - tolerant parsing: a broken top-level form is masked, the forms around it index
@@ -145,4 +153,7 @@ Eclipse Public License 2.0, as across jlt-commons, with GPL-2.0-or-later
 (with the Classpath Exception) named as a Secondary License so GPL projects
 can depend on it; see [NOTICE](NOTICE). Adapted MIT code (clojure-lsp,
 clj-surgeon, xi, sdiff) is attributed in [NOTICE](NOTICE), in
-[docs/third-party](docs/third-party) and in each adapted file.
+[docs/third-party](docs/third-party) and in each adapted file. The
+dependency source tools (`jolt-lsp.dep-source`, `jolt-lsp.dep-text`) are
+adapted from the deps tools of
+[clojure-mcp](https://github.com/bhauman/clojure-mcp) (EPL-2.0).

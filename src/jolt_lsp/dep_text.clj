@@ -4,7 +4,7 @@
   the check that a path is inside a dependency directory.
 
   Adapted from clojure-mcp's deps_grep and deps_read tools
-  (https://github.com/bhauman/clojure-mcp, Copyright (c) Bruce Hauman,
+  (https://github.com/bhauman/clojure-mcp, Copyright (c) 2025 Bruce Hauman,
   EPL-2.0)."
   (:require [clojure.string :as string]))
 

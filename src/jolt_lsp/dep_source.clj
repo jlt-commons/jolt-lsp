@@ -10,7 +10,7 @@
   otherwise.
 
   Adapted from clojure-mcp's deps_grep, deps_read and deps_list tools
-  (https://github.com/bhauman/clojure-mcp, Copyright (c) Bruce Hauman,
+  (https://github.com/bhauman/clojure-mcp, Copyright (c) 2025 Bruce Hauman,
   EPL-2.0). clojure-mcp reads entries out of JARs on the JVM classpath;
   here a dependency is a directory on disk."
   (:require [babashka.fs :as fs]

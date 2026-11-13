@@ -36,7 +36,6 @@
             [jolt-lsp.surgeon.fix-declares :as fix-declares]
             [jolt-lsp.surgeon.rename :as ns-rename]
             [jolt-lsp.syntax :as syntax]
-            [jolt-lsp.text :as text]
             [jolt-lsp.text.index :as tix]))
 
 (defonce state (atom {:root nil :db nil :synced 0}))

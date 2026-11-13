@@ -35,6 +35,11 @@ src/jolt_lsp/sdiff comes from samizdat, which adapted it from sdiff
 
 Each of those files carries a header naming its source.
 
+src/jolt_lsp/dep_source.clj and src/jolt_lsp/dep_text.clj are adapted from
+the deps_grep, deps_read and deps_list tools of clojure-mcp
+(https://github.com/bhauman/clojure-mcp), Copyright (c) 2025 Bruce Hauman,
+licensed under the Eclipse Public License 2.0.
+
 src/parinferish is vendored from oakes/parinferish
 (https://github.com/oakes/parinferish), dedicated to the public domain by
 its author, with one Jolt port change marked inline.
