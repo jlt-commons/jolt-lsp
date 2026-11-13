@@ -34,6 +34,9 @@ returns `{:ok false :candidates [...]}`. Paths may be relative to `root`.
 | `jolt_call_hierarchy` | `symbol`, `direction` (`callers`/`callees`) |
 | `jolt_impact` | `symbol` — transitive callers with distances |
 | `jolt_deps` | `ns`, `direction` (`dependencies`/`dependents`/`cycles`) |
+| `jolt_deps_list` | `pattern?`, `aliases?` — libraries the project resolves to, with version and `dir` |
+| `jolt_deps_grep` | `pattern`, `library?`, `glob?`, `case_insensitive?`, `files_only?`, `limit?` (default 50), `aliases?` — `lib`, `file`, `path`, `line`, `text`; `truncated` when cut |
+| `jolt_deps_read` | `file`, or `library`+`path`; `offset?` (1-based first line), `limit?`, `aliases?` — numbered `content`, `start`, `end`, `total-lines` |
 | `jolt_form` | `file`, `line`/`col` or `mode: "top"` |
 | `jolt_context` | `ns` or `file` |
 | `jolt_check` | `file` or `code`, `fix?` |
@@ -49,6 +52,13 @@ returns `{:ok false :candidates [...]}`. Paths may be relative to `root`.
 | `jolt_fix_declares` | `file`, `apply?` |
 | `jolt_extract` | `file`, `forms: [name]`, `to_ns`, `apply?` — returns `target` and `callers` still naming the old place |
 | `jolt_batch` | `ops: [{:tool, :args}]` — read-only tools only; `root` is passed down |
+
+The dependency tools see only what the project's deps.edn resolves to,
+transitively, plus the extra deps of any `aliases` named. Git and local
+dependencies are read in place, Maven JARs from an unpacked copy in
+`~/.cache/jolt-lsp` (`JOLT_LSP_CACHE`). A `library` is a full lib name, a
+group, or an artifact name. `jolt_deps_read` refuses a path outside those
+directories, `..` and symlinks included.
 
 Every tool returns one text block holding JSON; a result with `ok: false`
 is flagged `isError`.
@@ -90,7 +100,8 @@ around it are kept, and `jolt_diagnostics` reports a `syntax-error`.
 `diagnostics`, `calls`, `impact`, `deps`, `form`, `context`, `check`, `rename`,
 `clean-ns`, `add-require`, `replace-form`, `insert-form`, `refactor`,
 `format`, `java`, `new-file-ns`, `ignored-forms`, `structural-diff`,
-`rename-ns`, `fix-declares`, `extract`, plus `lsp` and `mcp`.
+`rename-ns`, `fix-declares`, `extract`, `deps-list`, `deps-grep`,
+`deps-read`, plus `lsp` and `mcp`.
 
 ## Recommended agent flow
 
@@ -101,6 +112,8 @@ around it are kept, and `jolt_diagnostics` reports a `syntax-error`.
 5. `jolt_rename`, `jolt_clean_ns`, `jolt_add_require`, `jolt_replace_form`,
    `jolt_refactor` with preview, inspect, then apply.
 6. `jolt_check` on text you wrote by hand, `jolt_diagnostics` on the file.
-7. `jolt_structural_diff` on what you changed before you call it done: it
+7. `jolt_deps_grep` / `jolt_deps_read` to see how a library does
+   something instead of guessing at its API.
+8. `jolt_structural_diff` on what you changed before you call it done: it
    says which forms changed behaviour and which only moved, were renamed or
    reformatted.

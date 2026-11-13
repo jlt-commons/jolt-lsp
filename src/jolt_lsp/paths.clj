@@ -3,7 +3,8 @@
   (:require [babashka.fs :as fs]
             [clojure.edn :as edn]
             [clojure.string :as string]
-            [jolt.deps :as deps]))
+            [jolt.deps :as deps]
+            [jolt.deps.ext :as deps-ext]))
 
 (defn project-root
   "Walk up from `start` to the nearest directory holding deps.edn."
@@ -111,13 +112,59 @@
              vec))
       (catch Throwable _ []))))
 
-(defn- extract-jar [jar]
+(defn- extract-jar
+  "Unpack a JAR into the cache once and return the directory. It unpacks into
+  a temporary sibling and renames it into place, so an interrupted or failed
+  unzip is never taken for a complete one on the next call."
+  [jar]
   (let [dest (str (fs/path (cache-dir) "jars"
                            (str (hash (str jar (fs/size jar))))))]
     (when-not (fs/exists? dest)
-      (try (fs/create-dirs (fs/parent dest)) (catch Throwable _ nil))
-      (try (fs/unzip jar dest) (catch Throwable _ nil)))
+      (let [tmp (str dest ".tmp-" (System/currentTimeMillis) "-" (rand-int 1000000))]
+        (try
+          (fs/create-dirs (fs/parent dest))
+          (fs/unzip jar tmp)
+          (when-not (fs/exists? dest) (fs/move tmp dest))
+          (catch Throwable _ nil)
+          (finally
+            (when (fs/exists? tmp)
+              (try (fs/delete-tree tmp) (catch Throwable _ nil)))))))
     (when (fs/exists? dest) dest)))
+
+(defn- jar-file? [p]
+  (and (fs/regular-file? p)
+       (let [l (string/lower-case p)]
+         (or (string/ends-with? l ".jar") (string/ends-with? l ".zip")))))
+
+(defn dep-libraries
+  "The libraries the project depends on, transitively, with the selected
+  aliases' extra deps: each {:lib :version :kind :root :dir}. :dir is the
+  directory holding the library's files, a git checkout, a local root or a
+  JAR unpacked into the cache; libraries with no files on disk are left out."
+  ([root] (dep-libraries root []))
+  ([root aliases]
+   (let [{:keys [libs]} (deps/resolve-project (str root) (mapv keyword aliases))]
+     (->> libs
+          (keep (fn [[lib coord]]
+                  (let [info (try (deps-ext/coord-info lib coord) (catch Throwable _ nil))
+                        r (some-> (:root info) str)
+                        dir (cond
+                              (nil? r) nil
+                              (fs/directory? r) (str (fs/canonicalize r))
+                              (jar-file? r) (some-> (extract-jar r) fs/canonicalize str))]
+                    (when dir
+                      {:lib (str lib)
+                       :version (or (:mvn/version coord) (:git/tag coord)
+                                    (:git/sha coord) (:local/root coord))
+                       :kind (cond (:mvn/version coord) :mvn
+                                   (:git/url coord) :git
+                                   (:git/sha coord) :git
+                                   (:local/root coord) :local
+                                   :else :other)
+                       :root r
+                       :dir dir}))))
+          (sort-by :lib)
+          vec))))
 
 (defn dep-files
   "Every .clj/.cljc source under dependency roots and extracted JARs."

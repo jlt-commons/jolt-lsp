@@ -12,7 +12,7 @@
     jolt-lsp.syntax-test jolt-lsp.replace-test jolt-lsp.review-test
     jolt-lsp.sdiff.core-test jolt-lsp.sdiff.group-test jolt-lsp.sdiff.names-test
     jolt-lsp.sdiff.address-test jolt-lsp.surgeon.cljc-test jolt-lsp.surgeon.move-test
-    jolt-lsp.surgeon.refactor-test jolt-lsp.restructure-test])
+    jolt-lsp.surgeon.refactor-test jolt-lsp.restructure-test jolt-lsp.dep-source-test])
 
 (defn -main [& _args]
   (apply require test-namespaces)

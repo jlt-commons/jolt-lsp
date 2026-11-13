@@ -31,6 +31,8 @@ navigation over a project index, diagnostics, refactors, and syntax repair.
 (def ^:private line-prop {:type "integer" :minimum 1 :description "1-based line"})
 (def ^:private col-prop {:type "integer" :minimum 1 :description "1-based column"})
 (def ^:private symbol-prop {:type "string" :description "A var: fqn (app.core/run) or bare name"})
+(def ^:private aliases-prop {:type "array" :items {:type "string"}
+                             :description "deps.edn aliases whose extra deps to include"})
 (def ^:private apply-prop {:type "boolean" :description "Write the change (default: preview only)"})
 
 (def tools
@@ -73,6 +75,28 @@ navigation over a project index, diagnostics, refactors, and syntax repair.
     :description "Transitive namespace dependencies or dependents, or every require cycle."
     :inputSchema (obj {:root root-prop :ns {:type "string"}
                        :direction {:type "string" :enum ["dependencies" "dependents" "cycles"]}})}
+   {:name "jolt_deps_list"
+    :description "The libraries the project depends on (transitively), with version and the directory their files are in."
+    :inputSchema (obj {:root root-prop :pattern {:type "string" :description "Regex on lib names"}
+                       :aliases aliases-prop})}
+   {:name "jolt_deps_grep"
+    :description "Regex search across the source files of the project's dependencies. Returns lib, file, line and text; pass file to jolt_deps_read."
+    :inputSchema (obj {:root root-prop :pattern {:type "string"}
+                       :library {:type "string" :description "group/artifact, group, or artifact"}
+                       :glob {:type "string" :description "File filter, e.g. *.clj or *.{clj,cljc}"}
+                       :case_insensitive {:type "boolean"}
+                       :files_only {:type "boolean"}
+                       :limit {:type "integer" :minimum 1 :description "Max results (default 50)"}
+                       :aliases aliases-prop}
+                      ["pattern"])}
+   {:name "jolt_deps_read"
+    :description "Read a file inside one of the project's dependencies, optionally a line range. Paths outside the dependencies are refused."
+    :inputSchema (obj {:root root-prop :file file-prop
+                       :library {:type "string"}
+                       :path {:type "string" :description "Path relative to the library, with library"}
+                       :offset {:type "integer" :minimum 1 :description "First line (default 1)"}
+                       :limit {:type "integer" :minimum 1 :description "Number of lines"}
+                       :aliases aliases-prop})}
    {:name "jolt_form"
     :description "The innermost form at a position, or every top-level form without one."
     :inputSchema (obj {:root root-prop :file file-prop :line line-prop :col col-prop
@@ -157,7 +181,7 @@ navigation over a project index, diagnostics, refactors, and syntax repair.
 (def ^:private read-only
   #{"jolt_index" "jolt_search" "jolt_definition" "jolt_references" "jolt_hover"
     "jolt_symbols" "jolt_diagnostics" "jolt_call_hierarchy" "jolt_impact"
-    "jolt_deps" "jolt_form" "jolt_context" "jolt_structural_diff"})
+    "jolt_deps" "jolt_deps_list" "jolt_deps_grep" "jolt_deps_read" "jolt_form" "jolt_context" "jolt_structural_diff"})
 
 (defn- norm-args [m]
   (into {}
@@ -180,6 +204,9 @@ navigation over a project index, diagnostics, refactors, and syntax repair.
       "jolt_call_hierarchy" (api/call-hierarchy root a)
       "jolt_impact" (api/impact root a)
       "jolt_deps" (api/deps root a)
+      "jolt_deps_list" (api/deps-list root a)
+      "jolt_deps_grep" (api/deps-grep root a)
+      "jolt_deps_read" (api/deps-read root a)
       "jolt_form" (api/form root a)
       "jolt_context" (api/context root a)
       "jolt_check" (api/check root a)

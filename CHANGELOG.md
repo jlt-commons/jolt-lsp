@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Dependency source tools, adapted from clojure-mcp's deps tools:
+  `jolt_deps_list` lists the libraries a project resolves to,
+  `jolt_deps_grep` searches their files (ripgrep when installed, a regex
+  scan otherwise) and `jolt_deps_read` reads one, or a line range of it.
+  Only the project's own dependencies are visible, with an alias's extra
+  deps on request; a read outside them is refused. CLI: `deps-list`,
+  `deps-grep`, `deps-read`.
+- An interrupted JAR unpack is no longer taken for a complete one: JARs
+  unpack into a temporary directory that is renamed into place.
+
 ## v0.2.1 - 2026-11-11
 
 - A def whose value is a map, `(def m {:k f})`, records the references
