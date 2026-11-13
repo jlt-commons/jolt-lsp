@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 - 2026-11-12
 
 - Dependency source tools, adapted from clojure-mcp's deps tools:
   `jolt_deps_list` lists the libraries a project resolves to,
