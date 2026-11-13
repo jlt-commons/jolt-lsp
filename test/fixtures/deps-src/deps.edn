@@ -1,0 +1,3 @@
+{:paths ["src"]
+ :deps {acme/widget {:local/root "lib/widget"}}
+ :aliases {:extra {:extra-deps {acme/gadget {:local/root "lib/gadget"}}}}}

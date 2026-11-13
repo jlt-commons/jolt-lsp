@@ -10,6 +10,7 @@
   (:require [babashka.fs :as fs]
             [clojure.string :as string]
             [jolt-lsp.db :as db]
+            [jolt-lsp.dep-source :as dep-source]
             [jolt-lsp.diagnostics :as diagnostics]
             [jolt-lsp.edit.add-require :as add-require]
             [jolt-lsp.edit.clean-ns :as clean-ns]
@@ -275,6 +276,43 @@
        :nodes (vec (sort (case direction
                            :dependents (graph/ns-dependents d ns)
                            (graph/ns-dependencies d ns))))})))
+
+;; ---------------------------------------------------------------------------
+;; dependency sources
+
+(defn- aliases-of [opts]
+  (let [a (:aliases opts)]
+    (cond (nil? a) []
+          (string? a) (remove string/blank? (string/split a #"[,\s]+"))
+          :else (map str a))))
+
+(defn- with-deps-errors [f]
+  (try (f)
+       (catch Throwable e
+         {:ok false :error (or (ex-message e) (str e))})))
+
+(defn deps-list
+  "The libraries the project depends on, transitively: lib, version, kind
+  and the directory their files are in. :pattern filters lib names."
+  [root opts]
+  (with-deps-errors
+    (fn []
+      (let [re (some->> (:pattern opts) (str "(?i)") re-pattern)
+            libs (dep-source/libraries (root-for root) {:aliases (aliases-of opts)})]
+        {:libraries (vec (cond->> (map #(dissoc % :root) libs)
+                           re (filter #(re-find re (:lib %)))))}))))
+
+(defn deps-grep
+  "Regex search across the dependencies' files."
+  [root opts]
+  (with-deps-errors
+    #(dep-source/grep (root-for root) (assoc opts :aliases (aliases-of opts)))))
+
+(defn deps-read
+  "Read a file, or a line range of one, inside a dependency."
+  [root opts]
+  (with-deps-errors
+    #(dep-source/read-file (root-for root) (assoc opts :aliases (aliases-of opts)))))
 
 (defn form [root opts]
   (let [path (resolve-path root (:file opts))

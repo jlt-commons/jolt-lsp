@@ -17,7 +17,8 @@
     jolt-lsp.spec.extract-spec
     jolt-lsp.spec.resolve-spec
     jolt-lsp.spec.graph-spec
-    jolt-lsp.spec.edit-spec])
+    jolt-lsp.spec.edit-spec
+    jolt-lsp.spec.dep-text-spec])
 
 (defn- pending? [report]
   (and (not (:ok report))
