@@ -123,13 +123,16 @@
               files-only (conj "-l"))
         cmd (-> cmd (conj "-e" pattern "--") (into dirs))
         {:keys [exit out err]} (apply shell/sh cmd)]
-    (case exit
-      0 (->> (if files-only (string/split out #"\u0000") (string/split-lines out))
-             (keep #(parse-rg-line % files-only))
-             (take limit)
-             vec)
-      1 []
-      (throw (ex-info (str "rg: " (string/trim (str err))) {:exit exit})))))
+    ;; 2 is also what rg exits with when it matched but could not read some
+    ;; file (permissions, a broken symlink): keep what it found
+    (cond
+      (or (zero? exit) (and (= 2 exit) (not (string/blank? out))))
+      (->> (if files-only (string/split out #"\u0000") (string/split-lines out))
+           (keep #(parse-rg-line % files-only))
+           (take limit)
+           vec)
+      (#{1 2} exit) []
+      :else (throw (ex-info (str "rg: " (string/trim (str err))) {:exit exit})))))
 
 (def ^:private default-limit 50)
 (def ^:private max-limit 1000)
@@ -191,16 +194,13 @@
       (nil? target)
       {:ok false :error (str "no single dependency matches " library "; see jolt_deps_list")}
 
-      (nil? (owner libs target))
-      {:ok false :error (str target " is not inside a dependency of this project")}
-
-      (not (fs/regular-file? target))
-      {:ok false :error (str "no such file: " target)}
-
       :else
+      ;; containment is decided on the real path: the dirs are canonical, and
+      ;; a symlink can lead into a dependency as well as out of one
       (let [real (str (fs/canonicalize target))
             lib (owner libs real)]
-        (if-not lib
-          {:ok false :error (str target " is not inside a dependency of this project")}
-          (merge {:ok true :lib (:lib lib) :file real :path (relative-to (:dir lib) real)}
-                 (window (slurp real) (or offset 1) limit)))))))
+        (cond
+          (nil? lib) {:ok false :error (str target " is not inside a dependency of this project")}
+          (not (fs/regular-file? real)) {:ok false :error (str "no such file: " target)}
+          :else (merge {:ok true :lib (:lib lib) :file real :path (relative-to (:dir lib) real)}
+                       (window (slurp real) (or offset 1) limit)))))))

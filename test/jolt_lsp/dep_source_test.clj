@@ -121,3 +121,27 @@
                                                :ops [{:tool "jolt_deps_grep"
                                                       :args {:pattern "defn spin"}}]}}})]
     (is (string/includes? (get-in resp [:result :content 0 :text]) "widget.clj"))))
+
+(deftest read-decides-containment-on-the-real-path
+  ;; a path that reaches a dependency through a symlink is that dependency's
+  ;; file; one that leaves through a symlink is refused (tested above)
+  (let [tmp (str (fs/create-temp-dir {:prefix "deps-link"}))
+        link (str tmp "/w")]
+    (try
+      (fs/create-sym-link link (str root "/lib/widget"))
+      (let [r (api/deps-read root {:file (str link "/src/acme/widget.clj")})]
+        (is (:ok r) (:error r))
+        (is (= "acme/widget" (:lib r))))
+      (finally (fs/delete-tree tmp)))))
+
+(deftest rg-keeps-matches-when-some-files-are-unreadable
+  (when (ds/rg-available?)
+    (let [f (str root "/lib/widget/src/acme/locked.clj")]
+      (try
+        (spit f "(ns acme.locked)\n")
+        (fs/set-posix-file-permissions f "---------")
+        (binding [ds/*rg* true]
+          (let [r (api/deps-grep root {:pattern "defn spin"})]
+            (is (nil? (:error r)) (:error r))
+            (is (= [4] (mapv :line (:results r))))))
+        (finally (fs/delete-if-exists f))))))
