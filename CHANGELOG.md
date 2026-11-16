@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.2 - 2026-11-16
+
+- v0.3.1 again, with its tests: the v0.3.1 tag left out a test file the test
+  runner requires, so its release build failed and published nothing.
+
 ## v0.3.1 - 2026-11-16
 
 - MCP tools called without `root` used the server's directory, which under
