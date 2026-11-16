@@ -1,8 +1,10 @@
 (ns jolt-lsp.mcp
   "MCP server over stdio, newline-delimited JSON-RPC 2.0."
-  (:require [clojure.string :as string]
+  (:require [babashka.fs :as fs]
+            [clojure.string :as string]
             [jolt-lsp.api :as api]
             [jolt-lsp.json :as json]
+            [jolt-lsp.paths :as paths]
             [jolt-lsp.version :as version]))
 
 (def instructions
@@ -26,7 +28,7 @@ navigation over a project index, diagnostics, refactors, and syntax repair.
   (cond-> {:type "object" :properties props}
     required (assoc :required required)))
 
-(def ^:private root-prop {:type "string" :description "Project root (default: the server's directory)"})
+(def ^:private root-prop {:type "string" :description "Project root. Default: the project of an absolute file, else the last root used, else the server's directory (never a plugin's install directory)"})
 (def ^:private file-prop {:type "string" :description "File path, absolute or relative to root"})
 (def ^:private line-prop {:type "integer" :minimum 1 :description "1-based line"})
 (def ^:private col-prop {:type "integer" :minimum 1 :description "1-based column"})
@@ -188,47 +190,71 @@ navigation over a project index, diagnostics, refactors, and syntax repair.
         (map (fn [[k v]] [(keyword (string/replace (name k) "_" "-")) v]))
         m))
 
+(defn- plugin-dir?
+  "A plugin's install directory (Kimi or Claude Code start the server
+  there). It is never the project the agent means."
+  [dir]
+  (or (fs/exists? (fs/path dir "kimi.plugin.json"))
+      (fs/exists? (fs/path dir ".claude-plugin" "plugin.json"))))
+
+(defn default-root
+  "The project a call works on: an explicit root, else the project holding
+  an absolute file, else the last root used, else the server's directory.
+  A plugin's install directory is skipped; nil when nothing is left."
+  [{:keys [root file last user-dir]}]
+  (or root
+      (when (and (string? file) (fs/absolute? file))
+        (paths/project-root (fs/parent file)))
+      (some #(when (and % (not (plugin-dir? %))) %) [last user-dir])))
+
+(defn server-dir [] (System/getProperty "user.dir"))
+(defn last-root [] (:root @api/state))
+
 (defn call-tool [name args]
   (let [args (norm-args args)
-        root (:root args)
+        root (default-root {:root (:root args) :file (:file args)
+                            :last (last-root) :user-dir (server-dir)})
         a (dissoc args :root)]
-    (case name
-      "jolt_index" (do (when (:refresh a) (api/refresh! root))
-                       (api/index-status root))
-      "jolt_search" (api/search root a)
-      "jolt_definition" (api/definition root a)
-      "jolt_references" (api/references root a)
-      "jolt_hover" (api/hover root a)
-      "jolt_symbols" (api/document-symbols root a)
-      "jolt_diagnostics" (api/diagnostics* root a)
-      "jolt_call_hierarchy" (api/call-hierarchy root a)
-      "jolt_impact" (api/impact root a)
-      "jolt_deps" (api/deps root a)
-      "jolt_deps_list" (api/deps-list root a)
-      "jolt_deps_grep" (api/deps-grep root a)
-      "jolt_deps_read" (api/deps-read root a)
-      "jolt_form" (api/form root a)
-      "jolt_context" (api/context root a)
-      "jolt_check" (api/check root a)
-      "jolt_rename" (api/rename* root a)
-      "jolt_clean_ns" (api/clean-ns* root a)
-      "jolt_add_require" (api/add-require* root a)
-      "jolt_replace_form" (api/replace-form* root a)
-      "jolt_insert_form" (api/insert-form* root a)
-      "jolt_refactor" (api/refactor* root a)
-      "jolt_format" (api/format* root a)
-      "jolt_structural_diff" (api/structural-diff root a)
-      "jolt_rename_namespace" (api/rename-namespace* root a)
-      "jolt_fix_declares" (api/fix-declares* root a)
-      "jolt_extract" (api/extract* root a)
-      "jolt_batch" {:results
-                    (mapv (fn [{:keys [tool args]}]
-                            (if (contains? read-only tool)
-                              (try (call-tool tool (merge (when root {:root root}) args))
-                                   (catch Throwable e {:ok false :error (str e)}))
-                              {:ok false :error (str tool " is not a read-only tool")}))
-                          (:ops a))}
-      {:ok false :error (str "unknown tool " name)})))
+    (if (nil? root)
+      {:ok false
+       :error "No root given and the server runs in a plugin directory: pass root, the project's absolute path."}
+      (case name
+        "jolt_index" (do (when (:refresh a) (api/refresh! root))
+                         (api/index-status root))
+        "jolt_search" (api/search root a)
+        "jolt_definition" (api/definition root a)
+        "jolt_references" (api/references root a)
+        "jolt_hover" (api/hover root a)
+        "jolt_symbols" (api/document-symbols root a)
+        "jolt_diagnostics" (api/diagnostics* root a)
+        "jolt_call_hierarchy" (api/call-hierarchy root a)
+        "jolt_impact" (api/impact root a)
+        "jolt_deps" (api/deps root a)
+        "jolt_deps_list" (api/deps-list root a)
+        "jolt_deps_grep" (api/deps-grep root a)
+        "jolt_deps_read" (api/deps-read root a)
+        "jolt_form" (api/form root a)
+        "jolt_context" (api/context root a)
+        "jolt_check" (api/check root a)
+        "jolt_rename" (api/rename* root a)
+        "jolt_clean_ns" (api/clean-ns* root a)
+        "jolt_add_require" (api/add-require* root a)
+        "jolt_replace_form" (api/replace-form* root a)
+        "jolt_insert_form" (api/insert-form* root a)
+        "jolt_refactor" (api/refactor* root a)
+        "jolt_format" (api/format* root a)
+        "jolt_structural_diff" (api/structural-diff root a)
+        "jolt_rename_namespace" (api/rename-namespace* root a)
+        "jolt_fix_declares" (api/fix-declares* root a)
+        "jolt_extract" (api/extract* root a)
+        "jolt_batch" {:results
+                      (mapv (fn [{:keys [tool args]}]
+                              (if (contains? read-only tool)
+                                (try (call-tool tool (merge (when root {:root root}) args))
+                                     (catch Throwable e {:ok false :error (str e)}))
+                                {:ok false :error (str tool " is not a read-only tool")}))
+                            (:ops a))}
+        {:ok false :error (str "unknown tool " name)}))))
 
 (defn- error-result? [v]
   (and (map? v) (false? (:ok v))))

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.3.1 - 2026-11-16
+
+- MCP tools called without `root` used the server's directory, which under
+  Kimi is the plugin's install directory, so they indexed the plugin. `root`
+  now defaults to the project holding an absolute `file`, then the last root
+  used, then the server's directory; a plugin's install directory is never
+  the default, and a call with nothing else to go on asks for `root`.
+
 ## v0.3.0 - 2026-11-12
 
 - Dependency source tools, adapted from clojure-mcp's deps tools:
