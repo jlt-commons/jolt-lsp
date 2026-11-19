@@ -194,20 +194,27 @@
 ;; ---------------------------------------------------------------------------
 ;; definitions
 
-(defn- meta-private?
-  "^:private name, ^{:private true} name, through any stack of metadata."
-  [node]
+(defn- flag-entry?
+  "Whether a metadata map entry sets `key`: present with a value other than
+  false or nil."
+  [key [k v]]
+  (and (= key (tree/text k))
+       (not (contains? #{"false" "nil"} (some-> v tree/text)))))
+
+(defn- meta-flag?
+  "^:key name, ^{:key v} name, through any stack of metadata."
+  [node key]
   (loop [n node]
     (if (and n (= :meta (tree/tag n)))
       (let [[m inner] (tree/children n)]
-        (if (or (= ":private" (tree/text m))
+        (if (or (= key (tree/text m))
                 (and (= :map (tree/tag m))
-                     (some (fn [[k v]] (and (= ":private" (tree/text k))
-                                            (= "true" (some-> v tree/text))))
-                           (partition-all 2 (tree/children m)))))
+                     (some #(flag-entry? key %) (partition-all 2 (tree/children m)))))
           true
           (recur inner)))
       false)))
+
+(defn- meta-private? [node] (meta-flag? node ":private"))
 
 (def ^:private attr-map-defs
   "The definers that take an attr-map after the name and docstring."
@@ -222,12 +229,12 @@
     (when (and (attr-map-defs h) n (= :map (tree/tag n)) (next nodes))
       n)))
 
-(defn- attr-map-private? [h nodes]
+(defn- attr-map-flag? [h nodes key]
   (boolean
    (when-let [m (attr-map h nodes)]
-     (some (fn [[k v]] (and (= ":private" (tree/text k))
-                            (= "true" (some-> v tree/text))))
-           (partition-all 2 (tree/children m))))))
+     (some #(flag-entry? key %) (partition-all 2 (tree/children m))))))
+
+(defn- attr-map-private? [h nodes] (attr-map-flag? h nodes ":private"))
 
 (defn- doc-string
   "The docstring: a string right after the name with something after it."
@@ -453,16 +460,19 @@
         private? (or (private-defs h)
                      (meta-private? name-node)
                      (attr-map-private? h after-doc))
+        deprecated? (or (meta-flag? name-node ":deprecated")
+                        (attr-map-flag? h after-doc ":deprecated"))
         fqn (when nm (if (:ns ctx) (str (:ns ctx) "/" nm) nm))
         ctx' (assoc ctx :current-var fqn)]
     (when nm
       (when-not (= h "declare")
         (add-var! ctx st
-               (var-entry ctx nm kind doc
-                          (some-> tail arglists-str)
-                          (param-names (:params tail))
-                          h private? (tree/node-range node)
-                          (tree/node-range (tree/meta-form name-node)))))
+               (assoc (var-entry ctx nm kind doc
+                                 (some-> tail arglists-str)
+                                 (param-names (:params tail))
+                                 h private? (tree/node-range node)
+                                 (tree/node-range (tree/meta-form name-node)))
+                      :deprecated deprecated?)))
       (case h
         ("defn" "defn-" "defmacro")
         (walk-fn-tail (drop-while #(= :map (tree/tag %)) after-doc) ctx' st)

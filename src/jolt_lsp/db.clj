@@ -167,7 +167,7 @@
        :kind (:kind v)
        :file-id file-id
        :private (boolean (:private v))
-       :deprecated false
+       :deprecated (boolean (:deprecated v))
        :doc (:doc v)
        :arglists (:arglists v)
        :params (pr-str (or (:params v) []))
@@ -466,8 +466,31 @@
       (remember! root entries)
       (timed "build index" (build-from-analyses root entries)))))
 
+(defn- dependent-analyses
+  "The other project files whose resolution can change when the namespaces
+  in `nss` change: files that require one of them, or share one (in-ns)."
+  [analyses path nss]
+  (let [nss (set (remove nil? nss))]
+    (filter (fn [a]
+              (and (not= path (:file-path a))
+                   (not (:external a))
+                   (or (contains? nss (:ns a))
+                       (some nss (get-in a [:ns-meta :requires])))))
+            analyses)))
+
+(defn- re-row
+  "Rebuild one file's rows in db. Returns db."
+  [db root a file-id all-vars vars-by-ns]
+  (let [fr (file-rows (assoc a :project root) file-id all-vars vars-by-ns
+                      (:next-local db 0))]
+    (-> (drop-file db file-id)
+        (put-file file-id (:rows fr))
+        (update :next-local (fnil max 0) (:next-local fr)))))
+
 (defn- patch-file
-  "Replace one file's rows from its new analysis entry."
+  "Replace one file's rows from its new analysis entry, and re-resolve the
+  files that depend on its namespace, since a var it adds or drops changes
+  what their names resolve to."
   [db root path entry]
   (let [cached (assoc (cached-entries root) path entry)
         analyses (analysis-maps (vals cached))
@@ -476,9 +499,13 @@
         a (some #(when (= (:file-path %) path) %) analyses)
         old (file-by-path db path)
         file-id (or (:id old) (inc (reduce max 0 (keys (:files db)))))
-        fr (file-rows (assoc a :project root) file-id all-vars vars-by-ns
-                      (:next-local db 0))
-        db' (put-file (drop-file db file-id) file-id (:rows fr))]
+        db' (re-row db root a file-id all-vars vars-by-ns)
+        db' (reduce (fn [d dep]
+                      (if-let [f (file-by-path d (:file-path dep))]
+                        (re-row d root dep (:id f) all-vars vars-by-ns)
+                        d))
+                    db'
+                    (dependent-analyses analyses path [(:ns old) (:ns a)]))]
     (swap! mem-cache assoc root cached)
     db'))
 
