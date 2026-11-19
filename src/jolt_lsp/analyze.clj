@@ -29,7 +29,14 @@
    "deftype" :deftype
    "deftest" :deftest
    "defspec" :def
-   "declare" :declare})
+   "declare" :declare
+   ;; jolt.ffi/defcfn, reached through the built-in lint-as below
+   "jolt.ffi/defcfn" :def})
+
+(def builtin-lint-as
+  "Macros every Jolt project has, analyzed as the form named. A project's
+  own :lint-as entry for the same macro wins."
+  {"jolt.ffi/defcfn" "jolt.ffi/defcfn"})
 
 (def private-defs #{"defn-"})
 
@@ -417,7 +424,7 @@
         nm (some-> name-node tree/meta-form sym-text)
         kind (get def-kinds h)
         after-name (drop 2 cs)
-        doc (when-not (#{"deftest" "defspec" "declare" "defrecord" "deftype"} h)
+        doc (when-not (#{"deftest" "defspec" "declare" "defrecord" "deftype" "jolt.ffi/defcfn"} h)
               (doc-string after-name))
         after-doc (if doc (rest after-name) after-name)
         tail (when (#{"defn" "defn-" "defmacro" "defrecord" "deftype"} h)
@@ -441,6 +448,9 @@
 
         ("deftest" "defspec")
         (walk-body after-name ctx' st)
+
+        ;; (defcfn name "c_symbol" [arg-types] ret-type): none of the rest is a reference
+        "jolt.ffi/defcfn" nil
 
         "defprotocol"
         (doseq [m (filter #(= :list (tree/tag %)) after-name)]
@@ -570,6 +580,26 @@
       (walk-fn-tail (rest (tree/children m)) ctx st :method-param)
       ;; protocol, interface and type names between the methods
       (tree/symbol-node? m) (add-occ! ctx st m false))))
+
+(defn- handle-proxy
+  "(proxy [class-and-interface-names] [ctor-args] method*): the class names
+  are references, the ctor args are walked, and every method body sees its
+  params and `this`."
+  [ctx st node]
+  (let [[_ supers ctor-args & methods] (tree/children node)]
+    (when supers
+      (doseq [n (if (= :vector (tree/tag supers)) (tree/children supers) [supers])]
+        (if (tree/symbol-node? n) (add-occ! ctx st n false) (walk-node n ctx st))))
+    (when ctor-args (walk-node ctor-args ctx st))
+    (doseq [m methods]
+      (if (= :list (tree/tag m))
+        (let [mcs (tree/children m)
+              scope (tree/node-range m)
+              this-id (when-let [mn (first mcs)]
+                        (add-local! st mn :method-param scope false false "this"))
+              mctx (bind-local ctx "this" this-id)]
+          (walk-fn-tail (rest mcs) mctx st :method-param))
+        (walk-node m ctx st)))))
 
 (defn- handle-case [node ctx st]
   (let [[_ expr & clauses] (tree/children node)]
@@ -746,8 +776,10 @@
 (defn- walk-list*
   [node ctx st]
   (let [raw (some-> node (tree/children) first sym-text)
-        h (or (when (and raw (seq *lint-as*) (not (get (:locals ctx) raw)))
+        free? (and raw (not (get (:locals ctx) raw)))
+        h (or (when (and free? (seq *lint-as*))
                 (get *lint-as* (head-fqn ctx raw)))
+              (when free? (get builtin-lint-as (head-fqn ctx raw)))
               raw)
         ;; record the head as an occurrence for special handlers too, so
         ;; core macros count as used and navigate
@@ -761,6 +793,7 @@
       (= h "defmethod") (do (head!) (handle-defmethod node ctx st))
       (contains? #{"fn" "fn*"} h) (do (head!) (handle-fn node ctx st))
       (= h "letfn") (do (head!) (handle-letfn node ctx st))
+      (= h "proxy") (do (head!) (handle-proxy ctx st node))
       (= h "reify") (do (head!) (handle-methods ctx st (rest (tree/children node))))
       (contains? #{"extend-type" "extend-protocol"} h)
       (let [cs (tree/children node)]

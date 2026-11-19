@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `jolt.ffi/defcfn` defines a var, so calls to a function declared with it
+  (`(ffi/defcfn ^:private unsetenv* "unsetenv" [:string] :int)`, under any
+  alias or referred) are no longer reported as unresolved, and go-to-definition
+  finds it. No project config is needed, and a project's own `:lint-as` entry
+  for it still wins.
+- `proxy` method bodies see their params and `this`, for single and multiple
+  arities. They were reported as unresolved symbols. The class names are
+  recorded as references and the constructor args are walked.
+
 ## v0.3.2 - 2026-11-16
 
 - v0.3.1 again, with its tests: the v0.3.1 tag left out a test file the test
