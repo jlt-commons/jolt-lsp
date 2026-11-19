@@ -49,7 +49,7 @@
 
 (def binding-heads
   #{"let" "let*" "loop" "loop*" "when-let" "if-let" "when-some" "if-some"
-    "when-first" "dotimes" "with-open" "with-local-vars" "binding"
+    "when-first" "dotimes" "with-open" "with-local-vars" "binding" "with-redefs"
     "for" "doseq"})
 
 (def skip-symbols
@@ -108,7 +108,8 @@
       (and qualified? (class-like? prefix))
       (and (not qualified?) (class-like? nm))))
 
-(declare head-fqn walk-node walk-list walk-call expand-libspec walk-quoted analyze* clause-items)
+(declare head-fqn walk-node walk-list walk-call expand-libspec walk-quoted analyze* clause-items
+         live-children)
 
 (defn- add-local!
   [st node kind scope-range keys-destructuring? destructured? & [nm]]
@@ -309,7 +310,7 @@
   "Split what follows a fn name into its single params vector and body, or
   its arities. Return-type metadata on the params (^String [x]) is allowed."
   [nodes]
-  (let [nodes (vec (clause-items nodes))
+  (let [nodes (vec (remove tree/uneval? (clause-items nodes)))
         idx (first (keep-indexed (fn [i n] (when (= :vector (tree/tag (tree/meta-form n))) i))
                                  nodes))]
     (if idx
@@ -319,7 +320,7 @@
       {:arities (filterv #(= :list (tree/tag %)) nodes)})))
 
 (defn- arity-parts [arity]
-  (let [cs (clause-items (tree/children arity))
+  (let [cs (clause-items (live-children arity))
         p (first cs)]
     (if (and p (= :vector (tree/tag (tree/meta-form p))))
       {:params (tree/meta-form p) :params-node p :body (rest cs)}
@@ -770,13 +771,21 @@
            :varargs-min-arity (:varargs-min-arity info))
     entry))
 
+(defn- plain-def?
+  "Whether what follows a def's name is a value, or a docstring and a value.
+  A macro analyzed as def through :lint-as may take more, and then its last
+  form is not the var's value."
+  [after-name]
+  (let [n (count (remove tree/uneval? after-name))]
+    (or (= 1 n) (and (= 2 n) (tree/string-node? (first after-name))))))
+
 (defn- def-arity
   "The arity a definition's var is called with, as far as its form shows:
   a defn's bodies, or the fn a def's value is."
   [h tail after-name]
   (cond
     (#{"defn" "defn-" "defmacro"} h) (some-> tail tail-bodies arity/arity-info)
-    (#{"def" "defonce"} h) (fn-node-arity (last after-name))
+    (#{"def" "defonce"} h) (when (plain-def? after-name) (fn-node-arity (last after-name)))
     :else nil))
 
 (defn- handle-def [node ctx st h]
@@ -809,7 +818,7 @@
                               h private? (tree/node-range node)
                               (tree/node-range (tree/meta-form name-node)))
                    (assoc :deprecated deprecated?)
-                   (cond-> (and (#{"def" "defonce"} h) (seq after-doc)
+                   (cond-> (and (#{"def" "defonce"} h) (seq after-doc) (plain-def? after-name)
                                 (not (fn-node-arity (last after-name)))
                                 ;; a dynamic var is rebound, and (def x nil)
                                 ;; is a placeholder something sets later
@@ -909,13 +918,13 @@
     (if-not (and v (= :vector (tree/tag v)))
       (walk-body (rest cs) ctx st)
       (cond
-        (#{"binding" "with-local-vars"} h)
+        (#{"binding" "with-redefs" "with-local-vars"} h)
         (do
           (doseq [[sym init] (partition-all 2 (live-children v))]
-            ;; binding names dynamic vars; with-local-vars binds locals
-            (if (= h "binding")
-              (walk-node sym ctx st)
-              nil)
+            ;; binding and with-redefs name vars, as (var x) does, so a
+            ;; private one may be named; with-local-vars binds locals
+            (when (not= h "with-local-vars")
+              (walk-node sym (assoc ctx :var-quote true) st))
             (when init (walk-node init ctx st)))
           (walk-implicit-body body
                      (if (= h "with-local-vars")
@@ -1188,6 +1197,19 @@
       (let [m (reduce add-require-spec (or (:ns-meta ctx) empty-ns-meta) specs)]
         (assoc ctx :ns-meta m :aliases (:aliases m) :refers (:refers m))))))
 
+(defn- handle-alias
+  "A top-level (alias 'p 'lib): p names lib for the rest of the file."
+  [node ctx st]
+  (walk-call node ctx st)
+  (let [[_ a t] (live-children node)
+        q (fn [n] (when (and n (tree/quote? n)) (some-> (first (tree/children n)) sym-text)))
+        al (q a)
+        target (q t)]
+    (if (and al target)
+      (let [m (assoc-in (or (:ns-meta ctx) empty-ns-meta) [:aliases al] target)]
+        (assoc ctx :ns-meta m :aliases (:aliases m)))
+      ctx)))
+
 (defn- handle-ns [node ctx _st]
   (let [cs (tree/children node)
         nm-node (second cs)
@@ -1222,6 +1244,7 @@
                 nil))))
         (assoc ctx
                :ns nm
+               :ns-declared true
                :ns-meta @st-meta
                :aliases (:aliases @st-meta)
                :refers (:refers @st-meta)
@@ -1235,7 +1258,7 @@
               (tree/quote? arg) (some-> (first (tree/children arg)) tree/sexpr str)
               (tree/symbol-node? arg) (sym-text arg)
               :else nil)]
-    (if sym (assoc ctx :ns sym) ctx)))
+    (if sym (assoc ctx :ns sym :ns-declared true) ctx)))
 
 (def ^:private tail-heads
   "Core forms walked as plain calls whose arguments can hold a tail call to
@@ -1452,6 +1475,9 @@
     (case h
       "ns" (handle-ns node ctx st)
       "in-ns" (handle-in-ns node ctx st)
+      "alias" (if (get (:locals ctx) "alias")
+                (do (walk-list* node ctx st) nil)
+                (handle-alias node ctx st))
       "require" (if (get (:locals ctx) "require")
                   (do (walk-list* node ctx st) nil)
                   (handle-require node ctx st))
@@ -1609,7 +1635,8 @@
   [source path]
   (let [parsed (read/parse-text source)
         st (new-state)
-        ctx {:ns nil
+        ;; a file with no ns form is evaluated in user, as at a REPL
+        ctx {:ns "user"
              :ns-meta empty-ns-meta
              :aliases {}
              :refers {}
@@ -1619,7 +1646,9 @@
              :path path}
         ctx (reduce (fn [c form] (walk-top form c st)) ctx (:forms parsed))]
     {:path path
-     :ns (:ns ctx)
+     ;; the namespace the file declares; :eval-ns is the one its code runs in
+     :ns (when (:ns-declared ctx) (:ns ctx))
+     :eval-ns (:ns ctx)
      :ns-meta (:ns-meta ctx)
      :occurrences @(:occurrences st)
      :keywords @(:keywords st)

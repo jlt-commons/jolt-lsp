@@ -8,7 +8,9 @@
             [jolt-lsp.db :as db]
             [jolt-lsp.diagnostics :as diagnostics]
             [jolt-lsp.query :as query]
-            [jolt-lsp.settings]))
+            [jolt-lsp.settings]
+            [jolt-lsp.api]
+            [jolt-lsp.cli]))
 
 (defn- project
   "A throwaway project with these files ({relative-path text}). Returns the
@@ -528,3 +530,78 @@
     (is (empty? (types-of "(defn g [x] (when x (atom 1)))\n(defn f [] (when-let [c (g 1)] (swap! c inc)))"))))
   (testing "loop locals are rebound by recur"
     (is (empty? (types-of "(defn f [xs] (loop [m nil xs xs] (if (seq xs) (recur (inc (or m 0)) (rest xs)) (inc m))))")))))
+
+;; ---------------------------------------------------------------------------
+;; lint: the CI gate
+
+(deftest lint-gate
+  (let [root (project {"src/g/a.clj" "(ns g.a)\n(defn f [x] x)\n(defn g [] (f))\n(defn- unused [] 1)\n"
+                       "src/g/ok.clj" "(ns g.ok)\n(defn h [] 1)\n"
+                       "src/g/w.clj" "(ns g.w)\n(defn- quiet [] 1)\n"
+                       "test/fixtures/bad.clj" "(ns fx.bad)\n(nope)\n"})]
+    (spit (str root "/deps.edn") "{:paths [\"src\" \"test\"]}")
+    (let [r (jolt-lsp.api/lint root {})]
+      (testing "an error fails the gate; files are relative to the root"
+        (is (:failed r))
+        (is (= 2 (get-in r [:counts :error])))
+        (is (some #(= "src/g/a.clj" (:file %)) (:findings r)))))
+    (testing "excluded files are not linted"
+      (let [r (jolt-lsp.api/lint root {:exclude ["test/fixtures"]})]
+        (is (= 1 (get-in r [:counts :error])))
+        (is (not-any? #(re-find #"fixtures" (:file %)) (:findings r)))))
+    (testing "clj-kondo's :output :exclude-files is read too"
+      (fs/create-dirs (str root "/.clj-kondo"))
+      (spit (str root "/.clj-kondo/config.edn") "{:output {:exclude-files [\"test/fixtures\"]}}")
+      (is (= 1 (get-in (jolt-lsp.api/lint root {}) [:counts :error]))))
+    (testing "the fail level"
+      (is (:failed (jolt-lsp.api/lint root {:fail-level :warning :exclude ["src/g/a.clj"]})))
+      (is (not (:failed (jolt-lsp.api/lint root {:exclude ["src/g/a.clj"]})))))
+    (testing "the text report"
+      (is (re-find #"src/g/a.clj:3:\d+: error: g.a/f is called with 0 args but expects 1"
+                   (jolt-lsp.cli/lint-text (jolt-lsp.api/lint root {})))))))
+
+;; ---------------------------------------------------------------------------
+;; false positives found surveying the libraries for the CI gate
+
+(deftest gate-survey-false-positives
+  (testing "data_readers files are data, not code"
+    (let [root (project {"src/data_readers.clj" "{mulog/flake com.brunobonacci.mulog.flakes/read-method}\n"
+                         "src/data_readers.cljc" "{time/date time-literals.read-write/date}\n"})]
+      (is (empty? (diags root "src/data_readers.clj")))
+      (is (empty? (diags root "src/data_readers.cljc")))))
+  (testing "Jolt's built-in namespaces are known without a require"
+    (is (empty? (local-diags* "(defn f [x] (clojure.math/floor x) (jolt.nrepl/start-server))"))))
+  (testing ":use and :refer :all from a core namespace refer its vars"
+    (is (empty? (filter #(= :unresolved-symbol (first %))
+                        (local-diags* "(ns l.a (:use clojure.test))\n(deftest t (is (= 1 1)) (testing \"x\" 1))")))))
+  (testing "a top-level alias names a namespace"
+    (let [root (project {"src/b/p.clj" "(ns b.p)\n(defn median [xs] xs)\n"
+                         "src/b/t.clj" "(ns b.t (:require [b.p]))\n(alias 'p 'b.p)\n(defn f [] (p/median [1]))\n"})]
+      (is (empty? (diags root "src/b/t.clj")))))
+  (testing "a file with no ns form is in user"
+    (let [root (project {"src/script.clj" "(defn pem->der [f] f)\n(def root (pem->der 1))\n(prn root)\n"})]
+      (is (empty? (filter #(= :unresolved-symbol (first %)) (diags root "src/script.clj"))))))
+  (testing "a discarded form before an arity's params"
+    (is (empty? (only :invalid-arity "(defn c ([p] (c p {})) (#_{:k 1} [p o] [p o]))\n(defn g [] (c 1 {}))"))))
+  (testing "the keyword :/ reads"
+    (let [root (project {"src/k/a.clj" "(ns k.a)\n(def ^:private ops {:+ \"+\" :/ \"/\"})\n(defn f [o] (ops o))\n"})]
+      (is (empty? (diags root "src/k/a.clj"))))))
+
+(deftest gate-survey-false-positives-2
+  (testing "a record ctor from a :refer :all namespace"
+    (let [root (project {"src/r/t.clj" "(ns r.t)\n(defrecord LogEntry [a b])\n"
+                         "src/r/u.clj" "(ns r.u (:require [r.t :refer :all]))\n(defn f [] (->LogEntry 1 2))\n"})]
+      (is (empty? (filter #(= :unresolved-symbol (first %)) (diags root "src/r/u.clj"))))))
+  (testing "excluding a special form leaves it a special form"
+    (is (empty? (filter #(= :unresolved-symbol (first %))
+                        (local-diags* "(ns l.a (:refer-clojure :exclude [def and]))\n(def x 1)"))))))
+
+(deftest with-redefs-and-binding-name-vars
+  (let [root (project {"src/p/a.clj" "(ns p.a)\n(defn- f [] 1)\n(def ^:private ^:dynamic *d* 1)\n(defn g [] (f))\n"
+                       "src/p/t.clj" "(ns p.t (:require [p.a :as a]))\n(defn t [] (with-redefs [a/f (fn [] 2)] (a/g)) (binding [a/*d* 2] (a/g)))\n"})]
+    (is (empty? (filter #(= :private-call (first %)) (diags root "src/p/t.clj"))))))
+
+(deftest lint-as-def-with-extra-args-infers-nothing
+  (let [root (project {"src/pm/a.clj" "(ns pm.a (:refer-clojure :exclude [-]))\n(defmacro vp [n f & more] nil)\n(vp - Prim/sub \"doc\" (fn [x] x))\n(defn g [] (- 1 2))\n"
+                       ".clj-kondo/config.edn" "{:lint-as {pm.a/vp clojure.core/def}}"})]
+    (is (empty? (filter #(#{:invalid-arity :unresolved-symbol} (first %)) (diags root "src/pm/a.clj"))))))

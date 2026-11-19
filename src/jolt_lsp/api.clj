@@ -24,6 +24,7 @@
             [jolt-lsp.graph.query :as graph]
             [jolt-lsp.ignored]
             [jolt-lsp.kondo :as kondo]
+            [jolt-lsp.paths :as paths]
             [jolt-lsp.query :as query]
             [jolt-lsp.refactor :as refactor]
             [jolt-lsp.replace :as replace]
@@ -248,6 +249,34 @@
     (if (or (:all opts) (nil? (:file opts)))
       (vec (diagnostics/project-diagnostics d o))
       (vec (diagnostics/file-diagnostics d (resolve-path root (:file opts)) o)))))
+
+(def ^:private level-rank {:info 1 :warning 2 :error 3})
+
+(defn lint
+  "Lint every project file, for a CI gate. opts: :fail-level (:error, the
+  default, :warning or :info), :exclude (regexes matched against the path
+  relative to root; clj-kondo's {:output {:exclude-files [...]}} adds to
+  them), :kondo (off unless asked: the gate should not depend on what else
+  is installed). Returns {:findings [...] :counts {level n} :failed bool},
+  each finding's :file relative to root, in file and position order."
+  [root opts]
+  (let [root (root-for root)
+        d (ensure-db root)
+        o (assoc (diag-opts root {:kondo (boolean (:kondo opts))}) :kondo (boolean (:kondo opts)))
+        excludes (map re-pattern (concat (:exclude opts) (settings/exclude-files root)))
+        rel #(paths/relative root %)
+        findings (->> (db/all-files d)
+                      (remove :external)
+                      (remove #(some (fn [re] (re-find re (rel (:path %)))) excludes))
+                      (mapcat #(diagnostics/file-diagnostics d (:path %) o))
+                      (map #(update % :file rel))
+                      (sort-by (juxt :file :row :col))
+                      vec)
+        counts (merge {:error 0 :warning 0 :info 0} (frequencies (map :severity findings)))
+        bar (level-rank (or (:fail-level opts) :error) 3)]
+    {:findings findings
+     :counts counts
+     :failed (boolean (some #(>= (level-rank (:severity %) 0) bar) findings))}))
 
 (defn- direction [x default]
   (if x (keyword (name x)) default))

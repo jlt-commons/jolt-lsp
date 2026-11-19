@@ -5,6 +5,14 @@
             [jolt-lsp.api :as api]
             [jolt-lsp.json :as json]))
 
+(defn lint-text
+  "A lint result as clj-kondo prints one: a line per finding, then counts."
+  [{:keys [findings counts]}]
+  (str (apply str (for [f findings]
+                    (str (:file f) ":" (:row f) ":" (:col f) ": " (name (:severity f)) ": "
+                         (:message f) " [" (name (:code f)) "]\n")))
+       "errors: " (:error counts) ", warnings: " (:warning counts) ", info: " (:info counts) "\n"))
+
 (defn- parse-args [args]
   (loop [args args
          opts {:json false :apply false :all false}
@@ -40,6 +48,8 @@
           "--ignore-case" (recur (rest args) (assoc opts :case-insensitive true) pos)
           "--files-only" (recur (rest args) (assoc opts :files-only true) pos)
           "--target-file" (recur (rest (rest args)) (assoc opts :target-file (second args)) pos)
+          "--fail-level" (recur (rest (rest args)) (assoc opts :fail-level (keyword (second args))) pos)
+          "--exclude" (recur (rest (rest args)) (update opts :exclude (fnil conj []) (second args)) pos)
           (recur (rest args) opts (conj pos a)))))))
 
 (defn- root [opts]
@@ -64,7 +74,7 @@
         {:keys [file line col rest]} (pos-args opts)
         usage (fn []
                 (println "usage: jolt-lsp <command> [options]")
-                (println "commands: index refresh search def refs hover symbols diagnostics calls impact")
+                (println "commands: index refresh search def refs hover symbols diagnostics lint calls impact")
                 (println "          deps form context check rename clean-ns add-require replace-form")
                 (println "          insert-form refactor format new-file-ns ignored-forms structural-diff")
                 (println "          rename-ns fix-declares extract deps-list deps-grep deps-read lsp mcp")
@@ -72,7 +82,8 @@
                 (println "          --direction D --alias A --old FORM --new TEXT --after FORM")
                 (println "          --before FORM --occurrence N --every --fix --code TEXT --target-file F")
                 (println "          --rev REV --to-ns NS --library L --glob G --aliases A,B")
-                (println "          --ignore-case --files-only --offset N"))]
+                (println "          --ignore-case --files-only --offset N")
+                (println "lint:     --fail-level error|warning|info --exclude REGEX (repeatable); exits 1 on a finding at that level"))]
     (cond
       (= cmd "index") (show opts (do (when (:refresh opts) (api/refresh! r))
                                      (assoc (api/index-status r) :command "index")))
@@ -87,6 +98,10 @@
                                    (api/hover r {:file file :line line :col col})
                                    (api/hover r {:symbol (first (:pos opts))})))
       (= cmd "symbols") (show opts (api/document-symbols r {:file file}))
+      (= cmd "lint") (let [res (api/lint r (select-keys opts [:fail-level :exclude :kondo]))]
+                       (if (:json opts) (show opts res) (print (lint-text res)))
+                       (flush)
+                       (when (:failed res) (shutdown-agents) (System/exit 1)))
       (= cmd "diagnostics") (show opts (api/diagnostics* r {:file file :all (:all opts) :kondo (:kondo opts)}))
       (= cmd "calls") (show opts (api/call-hierarchy r {:symbol (first (:pos opts))
                                                         :direction (or (:direction opts) :callers)}))

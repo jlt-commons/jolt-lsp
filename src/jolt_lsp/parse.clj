@@ -114,7 +114,8 @@
       (and (not= c0 \:) (plain-symbol? t)
            (not (#{"nil" "true" "false"} t)))
       :symbol
-      (= c0 \:) (when (re-matches keyword-re t) :keyword)
+      ;; :/ is a keyword too, the reader's one exception to "no bare /"
+      (= c0 \:) (when (or (= t ":/") (re-matches keyword-re t)) :keyword)
       (or (Character/isDigit c0)
           (and (#{\+ \-} c0) c1 (Character/isDigit c1)))
       (when (re-matches number-re t) :number)
