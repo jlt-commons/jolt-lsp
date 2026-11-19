@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- The optional clj-kondo bridge is gone: jolt-lsp no longer shells out to a
+  `clj-kondo` binary, since its own diagnostics now cover clj-kondo's checks,
+  config and hooks. The `:kondo` setting, the `--kondo` and `--no-kondo`
+  flags and the `kondo` argument of `jolt_diagnostics` are removed, so
+  results no longer depend on what else is installed.
+
 ## v0.5.0 - 2026-11-19
 
 - `jolt-lsp lint` checks every project file for a CI gate: findings printed

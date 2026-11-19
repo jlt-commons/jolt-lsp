@@ -9,7 +9,6 @@
             [jolt-lsp.core-info :as core-info]
             [jolt-lsp.custom :as custom]
             [jolt-lsp.db :as db]
-            [jolt-lsp.kondo :as kondo]
             [jolt-lsp.layer :as layer]
             [jolt-lsp.syntax :as syntax]
             [jolt-lsp.types :as types]))
@@ -247,7 +246,7 @@
 
 (defn file-diagnostics
   "Diagnostics for one indexed file. opts: :source (the text, when it is
-  not the file on disk), :kondo, :custom-linters, :clj-depend, :root,
+  not the file on disk), :custom-linters, :clj-depend, :root,
   :levels (a severity, or :off, per code)."
   ([db path] (file-diagnostics db path {}))
   ([db path opts]
@@ -278,7 +277,6 @@
                     (unused-bindings (db/local-defs-in-file db fid)
                                      (db/local-refs-in-file db fid))
                     (unused-private-vars (db/var-defs-in-file db fid) refs)
-                    (when (:kondo opts) (kondo/lint [path]))
                     (when (seq (:custom-linters opts))
                       (custom/lint db (:root opts) path opts))
                     (when (:clj-depend opts)

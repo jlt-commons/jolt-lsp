@@ -15,12 +15,10 @@
   under the project's own; that is where :hooks usually come from."
   (:require [babashka.fs :as fs]
             [clojure.edn :as edn]
-            [jolt-lsp.kondo :as kondo]
             [jolt-lsp.paths :as paths]))
 
 (def defaults
-  {:kondo nil                 ; nil = on when a native clj-kondo is available
-   :custom-linters []
+  {:custom-linters []
    :clj-depend nil
    :format {}})
 
@@ -41,10 +39,6 @@
 
 (defn load-settings [root]
   (merge defaults (read-edn (second (config-paths root)))))
-
-(defn kondo-enabled? [root]
-  (let [v (:kondo (load-settings root))]
-    (if (nil? v) (kondo/available?) (boolean v))))
 
 (defn- lib-dirs
   "<base>/<org>/<lib>/ and <base>/imports/<org>/<lib>/ dirs with a config.edn."

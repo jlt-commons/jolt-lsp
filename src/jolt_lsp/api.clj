@@ -23,7 +23,6 @@
             [jolt-lsp.git :as git]
             [jolt-lsp.graph.query :as graph]
             [jolt-lsp.ignored]
-            [jolt-lsp.kondo :as kondo]
             [jolt-lsp.paths :as paths]
             [jolt-lsp.query :as query]
             [jolt-lsp.refactor :as refactor]
@@ -232,12 +231,8 @@
     (query/document-symbols d (resolve-path root (:file opts)))))
 
 (defn- diag-opts [root opts]
-  (let [cfg (settings/load-settings (root-for root))
-        k (if (some? (:kondo opts))
-            (boolean (:kondo opts))
-            (let [v (:kondo cfg)] (if (nil? v) (kondo/available?) (boolean v))))]
+  (let [cfg (settings/load-settings (root-for root))]
     {:root (root-for root)
-     :kondo k
      :source (:source opts)
      :custom-linters (:custom-linters cfg)
      :clj-depend (:clj-depend cfg)
@@ -256,13 +251,12 @@
   "Lint every project file, for a CI gate. opts: :fail-level (:error, the
   default, :warning or :info), :exclude (regexes matched against the path
   relative to root; clj-kondo's {:output {:exclude-files [...]}} adds to
-  them), :kondo (off unless asked: the gate should not depend on what else
-  is installed). Returns {:findings [...] :counts {level n} :failed bool},
+  them). Returns {:findings [...] :counts {level n} :failed bool},
   each finding's :file relative to root, in file and position order."
   [root opts]
   (let [root (root-for root)
         d (ensure-db root)
-        o (assoc (diag-opts root {:kondo (boolean (:kondo opts))}) :kondo (boolean (:kondo opts)))
+        o (diag-opts root {})
         excludes (map re-pattern (concat (:exclude opts) (settings/exclude-files root)))
         rel #(paths/relative root %)
         findings (->> (db/all-files d)

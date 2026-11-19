@@ -59,7 +59,7 @@ Priority is agent value first, editor completeness second.
 | References | both | project + deps, context snippets, grouped counts |
 | Workspace symbol search | both | tiered fuzzy match: exact > prefix > substring > subsequence |
 | Hover | both | docstring, arglists, source, defined-by, deprecated |
-| Diagnostics | both | unresolved ns, unused/duplicate require, unused binding, unused private var, unresolved symbol; optional clj-kondo |
+| Diagnostics | both + clj-kondo | clj-kondo's checks built in (arity, types, unresolved vars, unused values, ...), with its config and hooks |
 | Document symbols | both | outline tree |
 | Call hierarchy | clojure-lsp | callers/callees with call sites; transitive impact |
 | Namespace dependency graph | clojure-lsp | dependencies/dependents, cycles, layer violations (later) |
@@ -133,7 +133,7 @@ Read-only:
 | `jolt_references` | `symbol` or position, `limit?` | locations with context; counts by namespace |
 | `jolt_hover` | `symbol` or position | doc, arglists, source, defined-by, deprecated |
 | `jolt_symbols` | `file` | document outline |
-| `jolt_diagnostics` | `file?`/`ns?`/`all?`, `kondo?` | findings with severity, code, range, related locations |
+| `jolt_diagnostics` | `file?`/`ns?`/`all?` | findings with severity, code, range, related locations |
 | `jolt_call_hierarchy` | `symbol`/position, `direction`, `depth?` | nodes + call-site edges |
 | `jolt_impact` | `symbol`, `depth?` | transitive callers, ranked by proximity |
 | `jolt_deps` | `ns`/`file`, `direction`, `depth?` | namespace dependency graph |
@@ -585,8 +585,8 @@ Verified on jolt 0.8.26:
   JVM Clojure table. Include `jolt.*` stdlib namespaces. No `cljs.core`.
 - `:lint-as` compatibility: read `.clj-kondo/config.edn` and project settings
   for macro → def/binding mapping, as the reference server does.
-- Optional clj-kondo: detect a native `clj-kondo` on PATH and shell out via
-  `babashka.process`; never required for core features.
+- clj-kondo's analysis is built in (arity, types, hooks, config); there is no
+  external clj-kondo binary to detect or shell out to.
 - JAR sources: use Jolt's embedded archive support or `unzip -p`; gate behind a
   capability check and keep it P1.
 
@@ -662,7 +662,8 @@ transaction) and keep `rc/*` for incremental writes. Do not remove the schema.
    deps first.
 6. **LSP client coverage.** Primary targets for v1: any LSP client for read
    features; Neovim/VS Code for edits. Calva custom APIs are out.
-7. **clj-kondo.** Optional external binary only; no JVM dependency.
+7. **clj-kondo.** Its checks, config and hooks are reimplemented in the
+   engine; no external binary, no JVM dependency.
 8. **License.** clojure-lsp is MIT, so attribution in `NOTICE` plus file
    headers is sufficient. Confirm the project's own license (recommend MIT to
    match the ecosystem) before publishing.
@@ -704,8 +705,7 @@ transaction) and keep `rc/*` for incremental writes. Do not remove the schema.
 - **M8 P2 refactors** — done for the planned set: sort-requires, cycle-keyword,
   inline-symbol, destructure-keys, restructure-keys, move-form, semantic
   tokens, code lens, whole-file cljfmt formatting, custom project linters,
-  clj-depend-style layer rules, and the clj-kondo bridge.
+  clj-depend-style layer rules, and clj-kondo's checks, config and hooks.
 
 Known limitations: dependency indexing covers Clojure sources in JARs and
-source roots; Java is out of scope. clj-kondo is on by default when installed
-and can be disabled per project or per call.
+source roots; Java is out of scope.
