@@ -595,3 +595,8 @@
   (testing "excluding a special form leaves it a special form"
     (is (empty? (filter #(= :unresolved-symbol (first %))
                         (local-diags* "(ns l.a (:refer-clojure :exclude [def and]))\n(def x 1)"))))))
+
+(deftest with-redefs-and-binding-name-vars
+  (let [root (project {"src/p/a.clj" "(ns p.a)\n(defn- f [] 1)\n(def ^:private ^:dynamic *d* 1)\n(defn g [] (f))\n"
+                       "src/p/t.clj" "(ns p.t (:require [p.a :as a]))\n(defn t [] (with-redefs [a/f (fn [] 2)] (a/g)) (binding [a/*d* 2] (a/g)))\n"})]
+    (is (empty? (filter #(= :private-call (first %)) (diags root "src/p/t.clj"))))))

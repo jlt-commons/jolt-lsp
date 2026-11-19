@@ -14,7 +14,8 @@
   namespaces referring nothing, Jolt's built-in `jolt.*` and `clojure.*`
   namespaces counted unknown, top-level `alias` calls, scripts with no `ns`
   form (they run in `user`), record constructors from a `:refer :all`
-  namespace, and `:refer-clojure :exclude` of a special form.
+  namespace, `:refer-clojure :exclude` of a special form, and the vars
+  `with-redefs` and `binding` name counted as private calls.
 - A document opened through a symlink got its diagnostics under the
   canonical path, with the symlinks resolved, because the index keys files
   that way. A client that names documents by the URI it opened them with

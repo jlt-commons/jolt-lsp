@@ -49,7 +49,7 @@
 
 (def binding-heads
   #{"let" "let*" "loop" "loop*" "when-let" "if-let" "when-some" "if-some"
-    "when-first" "dotimes" "with-open" "with-local-vars" "binding"
+    "when-first" "dotimes" "with-open" "with-local-vars" "binding" "with-redefs"
     "for" "doseq"})
 
 (def skip-symbols
@@ -910,13 +910,13 @@
     (if-not (and v (= :vector (tree/tag v)))
       (walk-body (rest cs) ctx st)
       (cond
-        (#{"binding" "with-local-vars"} h)
+        (#{"binding" "with-redefs" "with-local-vars"} h)
         (do
           (doseq [[sym init] (partition-all 2 (live-children v))]
-            ;; binding names dynamic vars; with-local-vars binds locals
-            (if (= h "binding")
-              (walk-node sym ctx st)
-              nil)
+            ;; binding and with-redefs name vars, as (var x) does, so a
+            ;; private one may be named; with-local-vars binds locals
+            (when (not= h "with-local-vars")
+              (walk-node sym (assoc ctx :var-quote true) st))
             (when init (walk-node init ctx st)))
           (walk-implicit-body body
                      (if (= h "with-local-vars")
