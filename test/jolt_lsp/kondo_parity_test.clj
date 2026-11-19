@@ -87,6 +87,9 @@
   (let [root (arity-project body)]
     (filterv #(= :invalid-arity (first %)) (diags root "src/ar/b.clj"))))
 
+(defn- arity-diags* [body]
+  (diags (arity-project body) "src/ar/b.clj"))
+
 (deftest arity-of-project-vars
   (is (has? (arity-diags "(two 1)") :invalid-arity "ar.a/two is called with 1 arg but expects 2"))
   (is (has? (arity-diags "(a/two 1 2 3)") :invalid-arity "with 3 args but expects 2"))
@@ -466,3 +469,6 @@
   (let [root (project {"src/t/gui.clj" "(ns t.gui)\n(def tab (atom 0))\n"
                        "src/t/h.clj" "(ns t.h)\n(require '[t.gui :as gui])\n(defn f [] @gui/tab)\n"})]
     (is (empty? (diags root "src/t/h.clj")))))
+
+(deftest referred-var-used-via-alias
+  (is (has? (arity-diags* "(a/two 1 2)") :aliased-referred-var "Var two is referred but used via alias: a")))

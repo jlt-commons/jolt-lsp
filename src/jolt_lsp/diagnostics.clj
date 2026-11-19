@@ -120,6 +120,15 @@
         :when ar]
     (diag ar :error :type-mismatch (:message m))))
 
+(defn aliased-referred-var
+  "A var the file refers, then names through an alias anyway."
+  [refs]
+  (let [referred (set (keep #(when (:refer %) (:fqn %)) refs))]
+    (for [r refs
+          :when (and (:qualified r) (contains? referred (:fqn r)) (checked-ref? r))]
+      (diag (row-range r) :info :aliased-referred-var
+            (str "Var " (:name r) " is referred but used via alias: " (:prefix r))))))
+
 (defn walk-findings
   "Findings the analysis walk decided (local calls, recur, overloads)."
   [findings]
@@ -256,6 +265,7 @@
                     (private-call refs var-of)
                     (deprecated-var refs var-of)
                     (type-mismatch refs)
+                    (aliased-referred-var refs)
                     (walk-findings (db/findings-in-file db fid))
                     (unused-namespaces requires refers u)
                     (unused-refers (filter :refer refs) u)
