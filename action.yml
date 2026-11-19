@@ -18,7 +18,9 @@ inputs:
     description: error, warning or info. Findings below it are printed but pass.
     default: error
   args:
-    description: More lint arguments, like `--exclude test/fixtures`.
+    description: >
+      More lint arguments, like `--exclude ^test/fixtures/`. Split on spaces
+      with no shell quoting, so a regex goes unquoted.
     default: ''
 
 runs:

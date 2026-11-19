@@ -84,8 +84,11 @@ release binary for the runner and runs `lint`:
       - uses: jlt-commons/jolt-lsp@v0.5.0
         with:
           fail-level: error              # the default
-          args: --exclude '^vendor/'     # optional
+          args: --exclude ^vendor/       # optional
 ```
+
+`args` is split on spaces with no shell quoting, so write each regex
+without quotes or spaces.
 
 ## MCP
 
