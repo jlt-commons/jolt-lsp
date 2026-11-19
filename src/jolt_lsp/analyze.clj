@@ -377,12 +377,18 @@
 
       :else ctx)))
 
+(defn- live-children
+  "Children of a binding vector with #_ discarded forms left out, so they
+  do not shift the name/value pairs."
+  [vnode]
+  (remove tree/uneval? (tree/children vnode)))
+
 (defn- bind-let-vector [vnode ctx st kind scope-range]
   (reduce (fn [ctx [pattern init]]
             (when init (walk-node init ctx st))
             (bind-pattern pattern ctx st kind scope-range))
           ctx
-          (partition-all 2 (tree/children vnode))))
+          (partition-all 2 (live-children vnode))))
 
 (defn- bind-for-vector [vnode ctx st kind scope-range]
   (if-not (and vnode (tree/branch? vnode))
@@ -395,7 +401,7 @@
                   :else (do (walk-node b ctx st)
                             (bind-pattern a ctx st kind scope-range)))))
             ctx
-            (partition-all 2 (tree/children vnode)))))
+            (partition-all 2 (live-children vnode)))))
 
 ;; ---------------------------------------------------------------------------
 ;; walking
@@ -526,7 +532,7 @@
       (cond
         (#{"binding" "with-local-vars"} h)
         (do
-          (doseq [[sym init] (partition-all 2 (tree/children v))]
+          (doseq [[sym init] (partition-all 2 (live-children v))]
             ;; binding names dynamic vars; with-local-vars binds locals
             (if (= h "binding")
               (walk-node sym ctx st)
@@ -535,7 +541,7 @@
           (walk-body body
                      (if (= h "with-local-vars")
                        (reduce (fn [c [sym _]] (bind-pattern sym c st :let scope))
-                               ctx (partition-all 2 (tree/children v)))
+                               ctx (partition-all 2 (live-children v)))
                        ctx)
                      st))
 
@@ -643,6 +649,29 @@
                (bind-local ctx nm (add-local! st nm-node :as-> (tree/node-range node) false false))
                ctx)]
     (walk-body (drop 3 cs) ctx' st)))
+
+(def ^:private threading-heads
+  #{"->" "->>" "some->" "some->>" "cond->" "cond->>"})
+
+(defn- handle-threading
+  "A threading macro. An `as->` among its steps has its expr threaded in,
+  so its name is the first argument and the body follows."
+  [node ctx st h]
+  (let [[_ expr & steps] (tree/children node)
+        clauses (if (contains? #{"cond->" "cond->>"} h)
+                  (partition-all 2 steps)
+                  (map vector (repeat nil) steps))]
+    (when expr (walk-node expr ctx st))
+    (doseq [[test step] clauses]
+      (when test (walk-node test ctx st))
+      (let [scs (when (and step (= :list (tree/tag step))) (tree/children step))
+            nm-node (second scs)]
+        (if (and (seq scs) (= "as->" (sym-text (first scs))) (tree/symbol-node? nm-node))
+          (let [ctx' (bind-local ctx (sym-text nm-node)
+                                 (add-local! st nm-node :as-> (tree/node-range step) false false))]
+            (add-occ! ctx st (first scs) true)
+            (walk-body (drop 2 scs) ctx' st))
+          (when step (walk-node step ctx st)))))))
 
 (def ^:private empty-ns-meta
   {:aliases {} :refers {} :requires [] :require-specs []
@@ -773,6 +802,25 @@
       (get (:refers ctx) h) (get (:refers ctx) h)
       :else (str (:ns ctx) "/" h))))
 
+(defn- handle-comment
+  "A rich comment: references count, definitions are not project
+  definitions, but a def'd name resolves for the rest of the comment."
+  [node ctx st]
+  (let [body (rest (tree/children node))
+        scope (tree/node-range node)
+        names (for [f body
+                    :when (= :list (tree/tag f))
+                    :let [[hd nm] (tree/children f)]
+                    :when (and hd (contains? #{"def" "defonce" "defn" "defn-" "defmacro" "defmulti"}
+                                             (sym-text hd)))
+                    :when (and nm (tree/symbol-node? (tree/meta-form nm)))]
+                (tree/meta-form nm))
+        ctx' (reduce (fn [c n]
+                       (bind-local c (sym-text n) (add-local! st n :comment-def scope false false)))
+                     (assoc ctx :in-comment true)
+                     names)]
+    (walk-body body ctx' st)))
+
 (defn- walk-list*
   [node ctx st]
   (let [raw (some-> node (tree/children) first sym-text)
@@ -786,13 +834,16 @@
         head! #(add-occ! ctx st (first (tree/children node)) true)]
     (cond
       ;; rich comments: references count, definitions do not
-      (= h "comment") (do (head!)
-                          (walk-body (rest (tree/children node)) (assoc ctx :in-comment true) st))
+      (= h "comment") (do (head!) (handle-comment node ctx st))
       (= h "quote") (when-let [n (second (tree/children node))]
                       (walk-quoted n ctx st))
       (= h "defmethod") (do (head!) (handle-defmethod node ctx st))
       (contains? #{"fn" "fn*"} h) (do (head!) (handle-fn node ctx st))
       (= h "letfn") (do (head!) (handle-letfn node ctx st))
+      (= h "proxy-super")
+      (do (head!) (walk-body (drop 2 (tree/children node)) ctx st))
+      (contains? threading-heads h)
+      (do (head!) (handle-threading node ctx st h))
       (= h "proxy") (do (head!) (handle-proxy ctx st node))
       (= h "reify") (do (head!) (handle-methods ctx st (rest (tree/children node))))
       (contains? #{"extend-type" "extend-protocol"} h)

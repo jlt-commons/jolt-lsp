@@ -13,7 +13,7 @@
     jolt-lsp.sdiff.core-test jolt-lsp.sdiff.group-test jolt-lsp.sdiff.names-test
     jolt-lsp.sdiff.address-test jolt-lsp.surgeon.cljc-test jolt-lsp.surgeon.move-test
     jolt-lsp.surgeon.refactor-test jolt-lsp.restructure-test jolt-lsp.dep-source-test
-    jolt-lsp.mcp-root-test jolt-lsp.defcfn-proxy-test])
+    jolt-lsp.mcp-root-test jolt-lsp.defcfn-proxy-test jolt-lsp.walk-gaps-test])
 
 (defn -main [& _args]
   (apply require test-namespaces)

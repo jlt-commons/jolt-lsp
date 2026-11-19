@@ -10,6 +10,16 @@
 - `proxy` method bodies see their params and `this`, for single and multiple
   arities. They were reported as unresolved symbols. The class names are
   recorded as references and the constructor args are walked.
+- A `#_` discarded form inside a binding vector (`let`, `loop`, `binding`,
+  `with-open`, `when-let`, `for`, `doseq` and the rest) no longer shifts the
+  name and value pairs, which had reported later bindings as unresolved or
+  unused.
+- An `as->` used as a step of `->`, `->>`, `some->`, `some->>`, `cond->` or
+  `cond->>` binds its name, since the threaded value is its expr.
+- In `(proxy-super method args)` the method name is no longer a reference and
+  the args are walked.
+- A `def` or `defn` inside a `(comment ...)` block resolves for the rest of
+  that comment. It is still not a project definition.
 
 ## v0.3.2 - 2026-11-16
 
