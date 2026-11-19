@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.4.0 - 2026-11-19
 
 - `textDocument/publishDiagnostics` now carries `version`, the version of the
   document the diagnostics were computed for (LSP 3.15). The server keeps the
