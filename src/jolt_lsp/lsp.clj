@@ -21,7 +21,7 @@
             [jolt-lsp.tree :as tree]
             [jolt-lsp.version :as version]))
 
-(defonce state (atom {:docs {}}))
+(defonce state (atom {:docs {} :versions {}}))
 
 (defn- root [] (:root @api/state))
 
@@ -66,19 +66,25 @@
   (let [[path source row col] (at-cursor params)]
     (query/definition-at (db*) path row col source)))
 
-(defn- publish-diagnostics [path]
+(defn- publish-diagnostics
+  "Push the diagnostics for `path`. The stored document version, when the
+  document is open, rides along as `version` so a client can match the push
+  to the text it was computed for."
+  [path]
   (let [source (source-of path)
-        ds (api/diagnostics* (root) {:file path :source source})]
+        ds (api/diagnostics* (root) {:file path :source source})
+        version (get-in @state [:versions path])]
     (rpc/notify "textDocument/publishDiagnostics"
-                {:uri (path->uri path)
-                 :diagnostics (mapv (fn [d]
-                                      {:range (lsp-range source [(:row d) (:col d)
-                                                                 (:end-row d) (:end-col d)])
-                                       :severity (case (:severity d) :error 1 :warning 2 :info 3 2)
-                                       :code (name (:code d))
-                                       :source (name (or (:source d) :jolt-lsp))
-                                       :message (:message d)})
-                                    ds)})))
+                (cond-> {:uri (path->uri path)
+                         :diagnostics (mapv (fn [d]
+                                              {:range (lsp-range source [(:row d) (:col d)
+                                                                         (:end-row d) (:end-col d)])
+                                               :severity (case (:severity d) :error 1 :warning 2 :info 3 2)
+                                               :code (name (:code d))
+                                               :source (name (or (:source d) :jolt-lsp))
+                                               :message (:message d)})
+                                            ds)}
+                  version (assoc :version version)))))
 
 (defn- handle-definition [params]
   (mapv location->lsp (definitions params)))
@@ -388,7 +394,8 @@
       "textDocument/didOpen"
       (let [path (doc-path params)
             text (get-in params [:textDocument :text])]
-        (swap! state assoc-in [:docs path] text)
+        (swap! state #(-> % (assoc-in [:docs path] text)
+                          (assoc-in [:versions path] (get-in params [:textDocument :version]))))
         (if (and (db/file-by-path (db*) path)
                  (= text (try (slurp path) (catch Throwable _ nil))))
           (publish-diagnostics path)
@@ -397,7 +404,8 @@
       "textDocument/didChange"
       (let [path (doc-path params)
             text (:text (last (:contentChanges params)))]
-        (swap! state assoc-in [:docs path] text)
+        (swap! state #(-> % (assoc-in [:docs path] text)
+                          (assoc-in [:versions path] (get-in params [:textDocument :version]))))
         (reindex! path text))
 
       "textDocument/didSave"
@@ -406,7 +414,7 @@
       "textDocument/didClose"
       (let [path (doc-path params)
             buffer (get-in @state [:docs path])]
-        (swap! state update :docs dissoc path)
+        (swap! state #(-> % (update :docs dissoc path) (update :versions dissoc path)))
         ;; an unsaved buffer's analysis gives way to the file on disk
         (when (and buffer (not= buffer (try (slurp path) (catch Throwable _ nil))))
           (api/refresh-file! (root) path)))

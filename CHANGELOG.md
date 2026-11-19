@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- `textDocument/publishDiagnostics` now carries `version`, the version of the
+  document the diagnostics were computed for (LSP 3.15). The server keeps the
+  `version` from `didOpen` and `didChange`, and `didSave`, which has none,
+  sends the last one stored. A client can match each push to the text it was
+  computed for instead of waiting for a push before sending the next change.
+  A document that isn't open gets a push without `version`, and `didClose`
+  forgets it.
+
 ## v0.3.3 - 2026-11-19
 
 - The `lsp` server answered nothing until more input arrived, because on Jolt
