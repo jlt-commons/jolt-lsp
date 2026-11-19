@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.3 - 2026-11-19
 
 - The `lsp` server answered nothing until more input arrived, because on Jolt
   a character read of `*in*` waits for a whole line or EOF and an LSP body has
