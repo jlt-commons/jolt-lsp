@@ -1,41 +1,76 @@
 (ns jolt-lsp.lsp.rpc
   "LSP stdio framing: Content-Length headers, JSON bodies.
 
-  Content-Length counts UTF-8 bytes. *in* yields decoded characters, so the
-  body is read character by character until their UTF-8 length reaches the
-  header's count; reading `n` characters would run into the next message
-  whenever a body holds non-ASCII text."
+  Frames are read as bytes from System/in. On Jolt, `.read` on `*in*` waits
+  for a whole line or EOF (https://github.com/burinc/jolt/issues/22) and an
+  LSP body has no newline, so a character reader leaves a request unanswered
+  until more input arrives. `.read` on System/in returns what is there.
+  Content-Length counts UTF-8 bytes, so reading bytes makes it exact for
+  non-ASCII bodies. Nothing else in lsp mode reads *in*, since two readers
+  would fight over buffered input."
   (:require [clojure.string :as string]
             [jolt-lsp.json :as json]
             [jolt-lsp.text :as text]))
 
-(defn- utf8-length [cp]
-  (cond (< cp 0x80) 1 (< cp 0x800) 2 (< cp 0x10000) 3 :else 4))
+(def ^:dynamic *in-stream*
+  "The byte stream frames are read from. Bound in tests."
+  System/in)
 
-(defn- read-body [n]
-  (let [sb (StringBuilder.)]
-    (loop [bytes 0]
-      (if (>= bytes n)
-        (str sb)
-        (let [c (.read *in*)]
-          (if (neg? c)
-            (str sb)
-            (do (.append sb (char c))
-                (recur (+ bytes (utf8-length c))))))))))
+(defn- read-header-line
+  "One header line as a string without its line end, or nil at end of input
+  with nothing read."
+  [in]
+  (let [buf (java.io.ByteArrayOutputStream.)]
+    (loop [seen? false]
+      (let [b (.read in)]
+        (cond
+          (neg? b) (when seen? (.toString buf "UTF-8"))
+          (= b 10) (string/replace (.toString buf "UTF-8") #"\r$" "")
+          :else (do (.write buf b) (recur true)))))))
 
-(defn read-message []
-  (loop [headers {}]
-    (let [line (read-line)]
-      (cond
-        (nil? line) nil
-        (string/blank? line)
-        (if-let [n (:content-length headers)]
-          (json/read-json (read-body (parse-long n)))
-          (recur headers))
-        :else
-        (let [[k v] (string/split line #":" 2)]
-          (recur (assoc headers (keyword (string/lower-case (string/trim k)))
-                        (string/trim (str v)))))))))
+(defn- read-body
+  "Exactly n bytes decoded as UTF-8, looping on short reads. Shorter only
+  when the input ends first."
+  [in n]
+  (let [buf (byte-array n)]
+    (loop [off 0]
+      (if (>= off n)
+        (String. buf "UTF-8")
+        (let [r (.read in buf off (- n off))]
+          (if (neg? r)
+            (String. (java.util.Arrays/copyOf buf off) "UTF-8")
+            (recur (+ off r))))))))
+
+(defn- warn! [msg]
+  (binding [*out* *err*]
+    (println (str "jolt-lsp: " msg))
+    (flush)))
+
+(defn read-message
+  "The next message, nil at end of input. A body that is not JSON is skipped
+  with one line on stderr. A missing, bad or negative Content-Length also
+  answers nil after a line on stderr: without a length there is no telling
+  where the body ends, and reading on would take every later body for
+  headers."
+  []
+  (let [in *in-stream*]
+    (loop [headers {}]
+      (let [line (read-header-line in)]
+        (cond
+          (nil? line) nil
+          (string/blank? line)
+          (let [n (some-> (:content-length headers) parse-long)]
+            (if (and n (>= n 0))
+              (let [msg (try (json/read-json (read-body in n))
+                             (catch Throwable _ ::bad))]
+                (if (= ::bad msg)
+                  (do (warn! "skipping a frame whose body is not JSON") (recur {}))
+                  msg))
+              (warn! "stopping: a frame has no usable Content-Length")))
+          :else
+          (let [[k v] (string/split line #":" 2)]
+            (recur (assoc headers (keyword (string/lower-case (string/trim k)))
+                          (string/trim (str v))))))))))
 
 (defn write-message [m]
   (let [body (json/write m)

@@ -91,7 +91,7 @@
 (def ^:private quiet-local-kinds
   "Locals whose disuse is normal: record fields, a fn's own name, method
   params fixed by a protocol, catch bindings."
-  #{:field :fn :letfn :method-param :catch})
+  #{:field :fn :letfn :method-param :catch :comment-def})
 
 (defn unused-bindings [locals local-refs]
   (let [used (set (map :local-id local-refs))]

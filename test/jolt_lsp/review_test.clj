@@ -157,13 +157,51 @@
     (is (= 5001 (count (graph/reachable edges 0))))
     (is (< (- (System/currentTimeMillis) t0) 5000))))
 
+(defn- read-frames
+  "Read `n` messages from the bytes of `input` through the rpc reader."
+  [^String input n]
+  (binding [rpc/*in-stream* (java.io.ByteArrayInputStream. (.getBytes input "UTF-8"))]
+    (vec (repeatedly n rpc/read-message))))
+
 (deftest lsp-frames-count-bytes
   (let [body "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"x\",\"params\":{\"s\":\"héllo→😀\"}}"
         bytes (count (.getBytes body "UTF-8"))
-        input (str "Content-Length: " bytes "\r\n\r\n" body "Content-Length: 2\r\n\r\n{}")]
-    (with-in-str input
-      (is (= "héllo→😀" (get-in (rpc/read-message) [:params :s])))
-      (is (= {} (rpc/read-message))))))
+        input (str "Content-Length: " bytes "\r\n\r\n" body "Content-Length: 2\r\n\r\n{}")
+        [a b c] (read-frames input 3)]
+    (is (= "héllo→😀" (get-in a [:params :s])))
+    (is (= {} b))
+    (testing "end of input answers nil"
+      (is (nil? c)))))
+
+(deftest lsp-reader-takes-headers-in-any-case-and-extra-headers
+  (let [[a] (read-frames (str "content-length: 2\r\nContent-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n{}") 1)]
+    (is (= {} a))))
+
+(deftest lsp-reader-skips-malformed-frames
+  (let [good "Content-Length: 2\r\n\r\n{}"]
+    (testing "a missing, non-numeric or negative Content-Length loses the
+              framing, so reading stops at that frame's blank line instead of
+              reading the bodies after it as headers"
+      (doseq [header ["X-Other: 1" "Content-Length: abc" "Content-Length: -5"]]
+        (let [rest-of-input (str "{\"id\":1}" good)
+              in (java.io.ByteArrayInputStream.
+                  (.getBytes (str header "\r\n\r\n" rest-of-input) "UTF-8"))]
+          (binding [rpc/*in-stream* in]
+            (is (nil? (rpc/read-message)) header)
+            (is (= (count rest-of-input) (.available in)) header)))))
+    (testing "a body that is not JSON is skipped, since the framing still holds"
+      (is (= [{} nil] (read-frames (str "Content-Length: 5\r\n\r\n{oops" good) 2))))))
+
+(deftest lsp-reader-survives-short-reads
+  ;; a stream that hands out at most 3 bytes per bulk read, as a pipe may
+  (let [bs (.getBytes "Content-Length: 22\r\n\r\n{\"id\":1,\"method\":\"ab\"}" "UTF-8")
+        inner (java.io.ByteArrayInputStream. bs)
+        in (proxy [java.io.InputStream] []
+             (read
+               ([] (.read inner))
+               ([buf off len] (.read inner buf off (min len 3)))))]
+    (binding [rpc/*in-stream* in]
+      (is (= {:id 1 :method "ab"} (rpc/read-message))))))
 
 (deftest inline-refuses-params
   (let [root (project! {"src/app/a.clj" "(ns app.a)\n(defn f [a b] (inc a))\n"})

@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+- The `lsp` server answered nothing until more input arrived, because on Jolt
+  a character read of `*in*` waits for a whole line or EOF and an LSP body has
+  no newline (https://github.com/burinc/jolt/issues/22). Frames are now read
+  as bytes from `System/in`: header lines up to the blank line, then exactly
+  Content-Length bytes decoded as UTF-8. MCP mode reads whole lines and is
+  unchanged.
+  A frame whose body is not JSON is skipped with one line on stderr instead of
+  ending the server. A missing, bad or negative Content-Length still ends it,
+  with a line on stderr, because without a length the reader can't tell where
+  the body stops and would read every later body as headers.
+- `jolt.ffi/defcfn` defines a var, so calls to a function declared with it
+  (`(ffi/defcfn ^:private unsetenv* "unsetenv" [:string] :int)`, under any
+  alias or referred) are no longer reported as unresolved, and go-to-definition
+  finds it. No project config is needed, and a project's own `:lint-as` entry
+  for it still wins.
+- `proxy` method bodies see their params and `this`, for single and multiple
+  arities. They were reported as unresolved symbols. The class names are
+  recorded as references and the constructor args are walked.
+- A `#_` discarded form inside a binding vector (`let`, `loop`, `binding`,
+  `with-open`, `when-let`, `for`, `doseq` and the rest) no longer shifts the
+  name and value pairs, which had reported later bindings as unresolved or
+  unused.
+- An `as->` used as a step of `->`, `->>`, `some->`, `some->>`, `cond->` or
+  `cond->>` binds its name, since the threaded value is its expr.
+- In `(proxy-super method args)` the method name is no longer a reference and
+  the args are walked.
+- A `def` or `defn` inside a `(comment ...)` block resolves for the rest of
+  that comment. It is still not a project definition.
+- Stacked discards (`#_ #_ a b`) are skipped in every pairing, and map
+  destructuring and `case` clauses skip `#_` too. `as->` is also recognised
+  as `clojure.core/as->` or through an alias.
+- Renaming, hover and go-to-definition on `this` inside a `proxy` method no
+  longer land on the method name: `this` has no declaration of its own.
+
 ## v0.3.2 - 2026-11-16
 
 - v0.3.1 again, with its tests: the v0.3.1 tag left out a test file the test

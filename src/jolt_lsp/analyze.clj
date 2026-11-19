@@ -29,7 +29,14 @@
    "deftype" :deftype
    "deftest" :deftest
    "defspec" :def
-   "declare" :declare})
+   "declare" :declare
+   ;; jolt.ffi/defcfn, reached through the built-in lint-as below
+   "jolt.ffi/defcfn" :def})
+
+(def builtin-lint-as
+  "Macros every Jolt project has, analyzed as the form named. A project's
+  own :lint-as entry for the same macro wins."
+  {"jolt.ffi/defcfn" "jolt.ffi/defcfn"})
 
 (def private-defs #{"defn-"})
 
@@ -85,7 +92,7 @@
       (and qualified? (class-like? prefix))
       (and (not qualified?) (class-like? nm))))
 
-(declare walk-node walk-list expand-libspec walk-quoted analyze*)
+(declare head-fqn walk-node walk-list expand-libspec walk-quoted analyze*)
 
 (defn- add-local!
   [st node kind scope-range keys-destructuring? destructured? & [nm]]
@@ -107,11 +114,13 @@
   (if id (assoc-in ctx [:locals nm] id) ctx))
 
 (defn- add-local-ref! [st local-id node]
-  (swap! (:local-refs st) conj
-         {:local-id local-id
-          :name (sym-text node)
-          :range (tree/node-range node)
-          :text (tree/text node)}))
+  ;; :synthetic names (proxy's `this`) have no declaration to point at
+  (when-not (= :synthetic local-id)
+    (swap! (:local-refs st) conj
+           {:local-id local-id
+            :name (sym-text node)
+            :range (tree/node-range node)
+            :text (tree/text node)})))
 
 (defn- add-occ! [ctx st node in-call?]
   (let [nm (sym-text node)]
@@ -324,6 +333,25 @@
           ctx
           (bind-local ctx nm (add-local! st en kind scope-range true true)))))))
 
+(defn- discard-depth
+  "How many #_ a discarded node stacks: `#_ q` is 1, `#_ #_ q 1` is 2."
+  [n]
+  (loop [n n d 0]
+    (if (tree/uneval? n)
+      (recur (first (tree/children n)) (inc d))
+      d)))
+
+(defn- live-children
+  "Children of a node with #_ discarded forms left out, so they do not
+  shift pairs. A stacked `#_ #_ a b` discards the form after `a` too."
+  [node]
+  (loop [[c & more] (tree/children node) pending 0 acc []]
+    (cond
+      (nil? c) acc
+      (tree/uneval? c) (recur more (+ pending (dec (discard-depth c))) acc)
+      (pos? pending) (recur more (dec pending) acc)
+      :else (recur more pending (conj acc c)))))
+
 (defn- bind-pattern [node ctx st kind scope-range]
   (let [node (some-> node tree/meta-form)]
     (cond
@@ -344,7 +372,7 @@
               (tree/children node))
 
       (= :map (tree/tag node))
-      (let [pairs (partition-all 2 (tree/children node))
+      (let [pairs (partition-all 2 (live-children node))
             ;; :or defaults see the bindings, and may name vars
             ctx' (reduce
                   (fn [ctx [k v]]
@@ -364,7 +392,7 @@
                   pairs)]
         (doseq [[k v] pairs
                 :when (and v (= ":or" (tree/text k)) (= :map (tree/tag v)))
-                [_ default] (partition-all 2 (tree/children v))]
+                [_ default] (partition-all 2 (live-children v))]
           (when default (walk-node default ctx' st)))
         ctx')
 
@@ -375,7 +403,7 @@
             (when init (walk-node init ctx st))
             (bind-pattern pattern ctx st kind scope-range))
           ctx
-          (partition-all 2 (tree/children vnode))))
+          (partition-all 2 (live-children vnode))))
 
 (defn- bind-for-vector [vnode ctx st kind scope-range]
   (if-not (and vnode (tree/branch? vnode))
@@ -388,7 +416,7 @@
                   :else (do (walk-node b ctx st)
                             (bind-pattern a ctx st kind scope-range)))))
             ctx
-            (partition-all 2 (tree/children vnode)))))
+            (partition-all 2 (live-children vnode)))))
 
 ;; ---------------------------------------------------------------------------
 ;; walking
@@ -417,7 +445,7 @@
         nm (some-> name-node tree/meta-form sym-text)
         kind (get def-kinds h)
         after-name (drop 2 cs)
-        doc (when-not (#{"deftest" "defspec" "declare" "defrecord" "deftype"} h)
+        doc (when-not (#{"deftest" "defspec" "declare" "defrecord" "deftype" "jolt.ffi/defcfn"} h)
               (doc-string after-name))
         after-doc (if doc (rest after-name) after-name)
         tail (when (#{"defn" "defn-" "defmacro" "defrecord" "deftype"} h)
@@ -441,6 +469,9 @@
 
         ("deftest" "defspec")
         (walk-body after-name ctx' st)
+
+        ;; (defcfn name "c_symbol" [arg-types] ret-type): none of the rest is a reference
+        "jolt.ffi/defcfn" nil
 
         "defprotocol"
         (doseq [m (filter #(= :list (tree/tag %)) after-name)]
@@ -516,7 +547,7 @@
       (cond
         (#{"binding" "with-local-vars"} h)
         (do
-          (doseq [[sym init] (partition-all 2 (tree/children v))]
+          (doseq [[sym init] (partition-all 2 (live-children v))]
             ;; binding names dynamic vars; with-local-vars binds locals
             (if (= h "binding")
               (walk-node sym ctx st)
@@ -525,7 +556,7 @@
           (walk-body body
                      (if (= h "with-local-vars")
                        (reduce (fn [c [sym _]] (bind-pattern sym c st :let scope))
-                               ctx (partition-all 2 (tree/children v)))
+                               ctx (partition-all 2 (live-children v)))
                        ctx)
                      st))
 
@@ -571,8 +602,25 @@
       ;; protocol, interface and type names between the methods
       (tree/symbol-node? m) (add-occ! ctx st m false))))
 
+(defn- handle-proxy
+  "(proxy [class-and-interface-names] [ctor-args] method*): the class names
+  are references, the ctor args are walked, and every method body sees its
+  params and `this`."
+  [ctx st node]
+  (let [[_ supers ctor-args & methods] (tree/children node)]
+    (when supers
+      (doseq [n (if (= :vector (tree/tag supers)) (tree/children supers) [supers])]
+        (if (tree/symbol-node? n) (add-occ! ctx st n false) (walk-node n ctx st))))
+    (when ctor-args (walk-node ctor-args ctx st))
+    (doseq [m methods]
+      (if (= :list (tree/tag m))
+        (let [mcs (tree/children m)
+              mctx (bind-local ctx "this" :synthetic)]
+          (walk-fn-tail (rest mcs) mctx st :method-param))
+        (walk-node m ctx st)))))
+
 (defn- handle-case [node ctx st]
-  (let [[_ expr & clauses] (tree/children node)]
+  (let [[_ expr & clauses] (live-children node)]
     (when expr (walk-node expr ctx st))
     ;; test constants are literals, never evaluated
     (doseq [[test-or-default result] (partition-all 2 clauses)]
@@ -613,6 +661,31 @@
                (bind-local ctx nm (add-local! st nm-node :as-> (tree/node-range node) false false))
                ctx)]
     (walk-body (drop 3 cs) ctx' st)))
+
+(def ^:private threading-heads
+  #{"->" "->>" "some->" "some->>" "cond->" "cond->>"})
+
+(defn- handle-threading
+  "A threading macro. An `as->` among its steps has its expr threaded in,
+  so its name is the first argument and the body follows."
+  [node ctx st h]
+  (let [[_ expr & steps] (tree/children node)
+        clauses (if (contains? #{"cond->" "cond->>"} h)
+                  (partition-all 2 steps)
+                  (map vector (repeat nil) steps))]
+    (when expr (walk-node expr ctx st))
+    (doseq [[test step] clauses]
+      (when test (walk-node test ctx st))
+      (let [scs (when (and step (= :list (tree/tag step))) (tree/children step))
+            nm-node (second scs)]
+        (if (and (seq scs) (tree/symbol-node? nm-node)
+                 (when-let [hd (sym-text (first scs))]
+                   (or (= "as->" hd) (= "clojure.core/as->" (head-fqn ctx hd)))))
+          (let [ctx' (bind-local ctx (sym-text nm-node)
+                                 (add-local! st nm-node :as-> (tree/node-range step) false false))]
+            (add-occ! ctx st (first scs) true)
+            (walk-body (drop 2 scs) ctx' st))
+          (when step (walk-node step ctx st)))))))
 
 (def ^:private empty-ns-meta
   {:aliases {} :refers {} :requires [] :require-specs []
@@ -743,24 +816,49 @@
       (get (:refers ctx) h) (get (:refers ctx) h)
       :else (str (:ns ctx) "/" h))))
 
+(defn- handle-comment
+  "A rich comment: references count, definitions are not project
+  definitions, but a def'd name resolves for the rest of the comment."
+  [node ctx st]
+  (let [body (rest (tree/children node))
+        scope (tree/node-range node)
+        names (for [f body
+                    :when (= :list (tree/tag f))
+                    :let [[hd nm] (tree/children f)]
+                    :when (and hd (contains? #{"def" "defonce" "defn" "defn-" "defmacro" "defmulti"}
+                                             (sym-text hd)))
+                    :when (and nm (tree/symbol-node? (tree/meta-form nm)))]
+                (tree/meta-form nm))
+        ctx' (reduce (fn [c n]
+                       (bind-local c (sym-text n) (add-local! st n :comment-def scope false false)))
+                     (assoc ctx :in-comment true)
+                     names)]
+    (walk-body body ctx' st)))
+
 (defn- walk-list*
   [node ctx st]
   (let [raw (some-> node (tree/children) first sym-text)
-        h (or (when (and raw (seq *lint-as*) (not (get (:locals ctx) raw)))
+        free? (and raw (not (get (:locals ctx) raw)))
+        h (or (when (and free? (seq *lint-as*))
                 (get *lint-as* (head-fqn ctx raw)))
+              (when free? (get builtin-lint-as (head-fqn ctx raw)))
               raw)
         ;; record the head as an occurrence for special handlers too, so
         ;; core macros count as used and navigate
         head! #(add-occ! ctx st (first (tree/children node)) true)]
     (cond
       ;; rich comments: references count, definitions do not
-      (= h "comment") (do (head!)
-                          (walk-body (rest (tree/children node)) (assoc ctx :in-comment true) st))
+      (= h "comment") (do (head!) (handle-comment node ctx st))
       (= h "quote") (when-let [n (second (tree/children node))]
                       (walk-quoted n ctx st))
       (= h "defmethod") (do (head!) (handle-defmethod node ctx st))
       (contains? #{"fn" "fn*"} h) (do (head!) (handle-fn node ctx st))
       (= h "letfn") (do (head!) (handle-letfn node ctx st))
+      (= h "proxy-super")
+      (do (head!) (walk-body (drop 2 (tree/children node)) ctx st))
+      (contains? threading-heads h)
+      (do (head!) (handle-threading node ctx st h))
+      (= h "proxy") (do (head!) (handle-proxy ctx st node))
       (= h "reify") (do (head!) (handle-methods ctx st (rest (tree/children node))))
       (contains? #{"extend-type" "extend-protocol"} h)
       (let [cs (tree/children node)]
