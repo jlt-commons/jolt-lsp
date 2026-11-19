@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- A document opened through a symlink got its diagnostics under the
+  canonical path, with the symlinks resolved, because the index keys files
+  that way. A client that names documents by the URI it opened them with
+  dropped every push for such a project, and on macOS that includes any
+  project under `/tmp` or `/var`. A push for an open document now uses the
+  URI from its `didOpen`, and a file open under two URIs gets a push for
+  each. The same URI names the document in definitions, references, rename
+  edits and other locations. A file the client never opened keeps its
+  canonical URI. (#7)
+
 ## v0.4.0 - 2026-11-19
 
 - `textDocument/publishDiagnostics` now carries `version`, the version of the
