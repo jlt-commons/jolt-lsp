@@ -108,7 +108,8 @@
       (and qualified? (class-like? prefix))
       (and (not qualified?) (class-like? nm))))
 
-(declare head-fqn walk-node walk-list walk-call expand-libspec walk-quoted analyze* clause-items)
+(declare head-fqn walk-node walk-list walk-call expand-libspec walk-quoted analyze* clause-items
+         live-children)
 
 (defn- add-local!
   [st node kind scope-range keys-destructuring? destructured? & [nm]]
@@ -309,7 +310,7 @@
   "Split what follows a fn name into its single params vector and body, or
   its arities. Return-type metadata on the params (^String [x]) is allowed."
   [nodes]
-  (let [nodes (vec (clause-items nodes))
+  (let [nodes (vec (remove tree/uneval? (clause-items nodes)))
         idx (first (keep-indexed (fn [i n] (when (= :vector (tree/tag (tree/meta-form n))) i))
                                  nodes))]
     (if idx
@@ -319,7 +320,7 @@
       {:arities (filterv #(= :list (tree/tag %)) nodes)})))
 
 (defn- arity-parts [arity]
-  (let [cs (clause-items (tree/children arity))
+  (let [cs (clause-items (live-children arity))
         p (first cs)]
     (if (and p (= :vector (tree/tag (tree/meta-form p))))
       {:params (tree/meta-form p) :params-node p :body (rest cs)}
@@ -1188,6 +1189,19 @@
       (let [m (reduce add-require-spec (or (:ns-meta ctx) empty-ns-meta) specs)]
         (assoc ctx :ns-meta m :aliases (:aliases m) :refers (:refers m))))))
 
+(defn- handle-alias
+  "A top-level (alias 'p 'lib): p names lib for the rest of the file."
+  [node ctx st]
+  (walk-call node ctx st)
+  (let [[_ a t] (live-children node)
+        q (fn [n] (when (and n (tree/quote? n)) (some-> (first (tree/children n)) sym-text)))
+        al (q a)
+        target (q t)]
+    (if (and al target)
+      (let [m (assoc-in (or (:ns-meta ctx) empty-ns-meta) [:aliases al] target)]
+        (assoc ctx :ns-meta m :aliases (:aliases m)))
+      ctx)))
+
 (defn- handle-ns [node ctx _st]
   (let [cs (tree/children node)
         nm-node (second cs)
@@ -1222,6 +1236,7 @@
                 nil))))
         (assoc ctx
                :ns nm
+               :ns-declared true
                :ns-meta @st-meta
                :aliases (:aliases @st-meta)
                :refers (:refers @st-meta)
@@ -1235,7 +1250,7 @@
               (tree/quote? arg) (some-> (first (tree/children arg)) tree/sexpr str)
               (tree/symbol-node? arg) (sym-text arg)
               :else nil)]
-    (if sym (assoc ctx :ns sym) ctx)))
+    (if sym (assoc ctx :ns sym :ns-declared true) ctx)))
 
 (def ^:private tail-heads
   "Core forms walked as plain calls whose arguments can hold a tail call to
@@ -1452,6 +1467,9 @@
     (case h
       "ns" (handle-ns node ctx st)
       "in-ns" (handle-in-ns node ctx st)
+      "alias" (if (get (:locals ctx) "alias")
+                (do (walk-list* node ctx st) nil)
+                (handle-alias node ctx st))
       "require" (if (get (:locals ctx) "require")
                   (do (walk-list* node ctx st) nil)
                   (handle-require node ctx st))
@@ -1609,7 +1627,8 @@
   [source path]
   (let [parsed (read/parse-text source)
         st (new-state)
-        ctx {:ns nil
+        ;; a file with no ns form is evaluated in user, as at a REPL
+        ctx {:ns "user"
              :ns-meta empty-ns-meta
              :aliases {}
              :refers {}
@@ -1619,7 +1638,9 @@
              :path path}
         ctx (reduce (fn [c form] (walk-top form c st)) ctx (:forms parsed))]
     {:path path
-     :ns (:ns ctx)
+     ;; the namespace the file declares; :eval-ns is the one its code runs in
+     :ns (when (:ns-declared ctx) (:ns ctx))
+     :eval-ns (:ns ctx)
      :ns-meta (:ns-meta ctx)
      :occurrences @(:occurrences st)
      :keywords @(:keywords st)

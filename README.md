@@ -60,6 +60,33 @@ Positions are 1-based line/column. Locations include 1-based ranges, LSP
 0-based UTF-16 ranges, and UTF-8 byte offsets. Edits preview by default;
 `--apply` writes.
 
+## Lint and CI
+
+`lint` checks every project file and prints findings the way clj-kondo
+does, then exits 1 if any is at or above `--fail-level` (`error` by
+default):
+
+```sh
+jolt-lsp lint --root .
+jolt-lsp lint --fail-level warning --exclude '^test/fixtures/' --root .
+```
+
+`--exclude` takes a regex matched against each path relative to the root and
+can be given more than once; clj-kondo's `{:output {:exclude-files [...]}}`
+in `.clj-kondo/config.edn` is read too. Linter levels, `:lint-as`, hooks and
+the rest of the lint config come from `.clj-kondo/config.edn` and
+`.jolt-lsp/config.edn`.
+
+In GitHub Actions, the repository is also an action that downloads the
+release binary for the runner and runs `lint`:
+
+```yaml
+      - uses: jlt-commons/jolt-lsp@v0.5.0
+        with:
+          fail-level: error              # the default
+          args: --exclude '^vendor/'     # optional
+```
+
 ## MCP
 
 The MCP server speaks newline-delimited JSON-RPC over stdio:

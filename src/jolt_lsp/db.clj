@@ -11,6 +11,7 @@
   (:require [babashka.fs :as fs]
             [clojure.string :as string]
             [jolt-lsp.analyze :as analyze]
+            [jolt-lsp.core-info :as core-info]
             [jolt-lsp.paths :as paths]
             [jolt-lsp.resolve :as resolve]
             [jolt-lsp.settings :as settings]
@@ -141,16 +142,14 @@
       (when (#{:defrecord :deftype} (:kind v))
         (:fqn v)))))
 
-(defn- builtin-ns?
-  "A namespace Jolt itself provides and always has loaded (jolt.host,
-  jolt.ffi): a qualified name into it needs no require."
-  [prefix]
-  (and (string/starts-with? prefix "jolt.")
-       (some? (find-ns (symbol prefix)))))
+(defn- builtin-ns? [prefix]
+  (core-info/builtin-ns? prefix))
 
 (defn- resolve-occurrence [analysis all-vars ns text]
   (let [unq-ctor (when (and ns (not (string/index-of text "/")))
-                   (ctor-fqn all-vars (str ns "/" text)))
+                   (or (ctor-fqn all-vars (str ns "/" text))
+                       ;; ->Rec from a namespace this one refers all of
+                       (some #(ctor-fqn all-vars (str % "/" text)) (:refer-all-nses analysis))))
         r (when-not unq-ctor (resolve/resolve-name analysis ns text))]
     (cond
       unq-ctor {:kind :var :fqn unq-ctor}
@@ -164,19 +163,24 @@
 (defn- ns-analysis [a vars-by-ns]
   (let [refer-all (get-in a [:ns-meta :refer-all])]
     {:ns-name (:ns a)
+     :refer-all-nses refer-all
      :var-names (set (map :name (get vars-by-ns (:ns a))))
      :aliases (get-in a [:ns-meta :aliases])
      :refers (get-in a [:ns-meta :refers])
      :requires (set (get-in a [:ns-meta :requires]))
      :imports (get-in a [:ns-meta :imports])
      :refer-all (into {}
-                      (for [target refer-all
-                            v (get vars-by-ns target)
-                            :when (not (:private v))]
-                        [(:name v) (:fqn v)]))
+                      (concat
+                       ;; (:use clojure.test): the running Jolt's publics
+                       (mapcat core-info/public-names refer-all)
+                       (for [target refer-all
+                             v (get vars-by-ns target)
+                             :when (not (:private v))]
+                         [(:name v) (:fqn v)])))
      ;; (:refer-clojure :exclude [==]): those names are not core here
+     ;; special forms (def, if, fn) cannot be excluded
      :core (let [ex (get-in a [:ns-meta :core-excludes])]
-             (if (seq ex) (apply disj @core-names ex) @core-names))}))
+             (if (seq ex) (into (apply disj @core-names ex) special-names) @core-names))}))
 
 ;; ---------------------------------------------------------------------------
 ;; inferred types
@@ -343,7 +347,7 @@
         ;; :refer :all from a namespace the index has no vars for: any
         ;; bare name may come from it, so none is reported unresolved
         blind-refer-all? (some #(and (empty? (get vars-by-ns %))
-                                     (not (contains? resolve/core-namespaces %)))
+                                     (nil? (core-info/public-names %)))
                                (get-in a [:ns-meta :refer-all]))
         forward? (fn [occ r]
                    (and (not (:qualified occ))
@@ -475,6 +479,8 @@
 (defn- analysis-maps [entries]
   (mapv (fn [e]
           (-> (:analysis e)
+              ;; a script with no ns form runs in user
+              (update :ns #(or % (:eval-ns (:analysis e))))
               (assoc :file-path (:path e) :external (:external e)
                      :hash (:hash e) :mtime (:mtime e))
               (update :vars #(mapv (fn [v] (assoc v :external (:external e))) %))))

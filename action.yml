@@ -1,0 +1,64 @@
+name: jolt-lsp lint
+description: >
+  Lint a Jolt project with jolt-lsp and fail the job when it finds anything
+  at the given level. Downloads the release binary for the runner (Linux
+  x86_64 or macOS arm64); nothing else needs to be installed.
+
+inputs:
+  version:
+    description: >
+      The jolt-lsp release to run, like v0.5.0. Empty means the ref this
+      action is used at when that is a release tag (jlt-commons/jolt-lsp@v0.5.0),
+      else the latest release.
+    default: ''
+  root:
+    description: The project directory, holding deps.edn.
+    default: '.'
+  fail-level:
+    description: error, warning or info. Findings below it are printed but pass.
+    default: error
+  args:
+    description: More lint arguments, like `--exclude test/fixtures`.
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: jolt-lsp lint
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        ACTION_REF: ${{ github.action_ref }}
+        INPUT_ROOT: ${{ inputs.root }}
+        INPUT_FAIL_LEVEL: ${{ inputs.fail-level }}
+        INPUT_ARGS: ${{ inputs.args }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        version="$INPUT_VERSION"
+        if [ -z "$version" ]; then
+          case "$ACTION_REF" in
+            v*) version="$ACTION_REF" ;;
+            *) version=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+                 https://api.github.com/repos/jlt-commons/jolt-lsp/releases/latest \
+                 | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1) ;;
+          esac
+        fi
+        case "$(uname -s)-$(uname -m)" in
+          Linux-x86_64) target=x86_64-linux ;;
+          Darwin-arm64) target=aarch64-macos ;;
+          *) echo "::error::no jolt-lsp binary for $(uname -s) $(uname -m)"; exit 1 ;;
+        esac
+        # the Chez runtime in the binary links lz4; the runner images usually have it
+        if [ "$target" = x86_64-linux ] && ! ldconfig -p | grep -q liblz4; then
+          sudo apt-get update -qq && sudo apt-get install -y -qq liblz4-1
+        fi
+        name="jolt-lsp-${version}-${target}"
+        dir="$RUNNER_TEMP/jolt-lsp"
+        mkdir -p "$dir"
+        curl -fsSL "https://github.com/jlt-commons/jolt-lsp/releases/download/${version}/${name}.tar.gz" \
+          | tar xz -C "$dir"
+        echo "jolt-lsp ${version}"
+        # INPUT_ARGS is split on spaces on purpose: it is a list of arguments
+        # shellcheck disable=SC2086
+        "$dir/$name/jolt-lsp" lint --root "$INPUT_ROOT" --fail-level "$INPUT_FAIL_LEVEL" $INPUT_ARGS

@@ -1,3 +1,3 @@
 (ns jolt-lsp.version)
 
-(def version "0.4.0")
+(def version "0.5.0")

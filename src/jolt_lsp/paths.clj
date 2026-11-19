@@ -59,6 +59,8 @@
 (defn dialect [path]
   (let [p (string/lower-case path)]
     (cond
+      ;; a map of reader tags to fns: data, though it carries a code extension
+      (re-find #"(^|/)data_readers\.cljc?$" p) :edn
       (string/ends-with? p ".cljc") :cljc
       (string/ends-with? p ".clj") :clj
       (string/ends-with? p ".edn") :edn
@@ -82,10 +84,13 @@
         (string/replace "+" "%2B")
         (java.net.URLDecoder/decode "UTF-8"))))
 
-(defn relative [root path]
-  (let [r (str root)]
-    (if (string/starts-with? path r)
-      (string/replace-first path r "")
+(defn relative
+  "path relative to root, when it is under root (not merely sharing a
+  prefix: /a/bc is not under /a/b); else path."
+  [root path]
+  (let [r (string/replace (str root) #"/+$" "")]
+    (if (string/starts-with? path (str r "/"))
+      (subs path (inc (count r)))
       path)))
 
 (defn subprojects

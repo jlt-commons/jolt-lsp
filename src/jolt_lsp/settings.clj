@@ -106,6 +106,11 @@
                   (map #(str % "/config.edn") dirs)
                   (hook-files dirs)))))
 
+(defn exclude-files
+  "clj-kondo's {:output {:exclude-files [regex ...]}}: files lint skips."
+  [root]
+  (vec (get-in (read-edn (first (config-paths root))) [:output :exclude-files])))
+
 (defn- deep-merge [a b]
   (if (and (map? a) (map? b)) (merge-with deep-merge a b) b))
 

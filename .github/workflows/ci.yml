@@ -81,6 +81,10 @@ jobs:
       - name: Specs
         run: jolt -M:spec
 
+      # jolt-lsp's own lint, from source; the fixtures are broken on purpose
+      - name: Lint
+        run: jolt -m jolt-lsp.main lint --exclude '^test/fixtures/'
+
   # a standalone binary per platform, built and smoke-tested on every run so a
   # broken build shows up before a release, not in one
   build:

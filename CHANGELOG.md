@@ -1,7 +1,20 @@
 # Changelog
 
-## Unreleased
+## v0.5.0 - 2026-11-19
 
+- `jolt-lsp lint` checks every project file for a CI gate: findings printed
+  as clj-kondo prints them, exit 1 at `--fail-level` (`error` by default),
+  `--exclude` regexes and clj-kondo's `:output :exclude-files`. The
+  repository is a GitHub Action that runs it with the release binary
+  (`uses: jlt-commons/jolt-lsp@v0.5.0`).
+- More false positives found linting the jlt-commons and jolt-lang libraries
+  are fixed: `data_readers.clj` read as code, the keyword `:/` failing to
+  parse (so the rest of the file went unindexed), a `#_` form before an
+  arity's params dropping that arity, `:use` and `:refer :all` of core
+  namespaces referring nothing, Jolt's built-in `jolt.*` and `clojure.*`
+  namespaces counted unknown, top-level `alias` calls, scripts with no `ns`
+  form (they run in `user`), record constructors from a `:refer :all`
+  namespace, and `:refer-clojure :exclude` of a special form.
 - A document opened through a symlink got its diagnostics under the
   canonical path, with the symlinks resolved, because the index keys files
   that way. A client that names documents by the URI it opened them with

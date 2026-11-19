@@ -5,7 +5,8 @@
 
   Macros are left out of the arity facts: a core macro's :arglists is
   often documentation (`[name doc-string? attr-map? ...]`), not its params."
-  (:require [jolt-lsp.arity :as arity]
+  (:require [clojure.string]
+            [jolt-lsp.arity :as arity]
             [jolt-lsp.resolve :as resolve]))
 
 (defn- var-info [v]
@@ -24,6 +25,32 @@
                 :when n
                 [s v] (ns-publics n)]
             [(str nsn "/" s) (var-info v)]))))
+
+(def ^:private loadable
+  (memoize
+   (fn [nsn]
+     (or (some? (find-ns (symbol nsn)))
+         (try (require (symbol nsn)) true (catch Throwable _ false))))))
+
+(defn builtin-ns?
+  "A namespace Jolt itself provides (jolt.host, jolt.nrepl, clojure.math):
+  loaded, or loadable from the runtime. A qualified name into it needs no
+  require."
+  [nsn]
+  (boolean
+   (and nsn (or (clojure.string/starts-with? nsn "jolt.")
+                (clojure.string/starts-with? nsn "clojure."))
+        (loadable nsn))))
+
+(defn public-names
+  "{name fqn} of a core or built-in namespace's public vars, for :use and
+  :refer :all of it; nil for any other namespace."
+  [nsn]
+  (when (or (contains? resolve/core-namespaces nsn) (builtin-ns? nsn))
+    (when-let [n (find-ns (symbol nsn))]
+      (into {} (for [[s v] (ns-publics n)
+                     :when (not (:private (meta v)))]
+                 [(str s) (str nsn "/" s)])))))
 
 (defn lookup
   "Facts for a core fqn, or nil when no such public var is loaded."
