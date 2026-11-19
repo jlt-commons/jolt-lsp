@@ -48,6 +48,10 @@ Parts of the linting follow clj-kondo (https://github.com/clj-kondo/clj-kondo),
 Copyright (c) Michiel Borkent, licensed under the Eclipse Public License
 1.0, which allows distribution under later versions of the license. Files
 with adapted code carry a header naming clj-kondo and the functions taken:
-src/jolt_lsp/arity.clj, src/jolt_lsp/hooks.clj and src/clj_kondo/hooks_api.clj
+src/jolt_lsp/arity.clj, src/jolt_lsp/hooks.clj, src/clj_kondo/hooks_api.clj
 (the hooks API clj-kondo hooks are written against, re-implemented over
-jolt-lsp's walk).
+jolt-lsp's walk), src/jolt_lsp/types.clj (the type lattice and argument
+check), src/jolt_lsp/pure.clj (the side-effect-free core fns) and
+src/jolt_lsp/analyze.clj (format-arg-count, after analyze-format-string).
+src/jolt_lsp/types/clojure_core.clj, clojure_string.clj and clojure_set.clj
+are clj-kondo's type specs, copied with only the namespace changed.

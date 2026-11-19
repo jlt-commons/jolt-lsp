@@ -11,7 +11,8 @@
             [jolt-lsp.db :as db]
             [jolt-lsp.kondo :as kondo]
             [jolt-lsp.layer :as layer]
-            [jolt-lsp.syntax :as syntax]))
+            [jolt-lsp.syntax :as syntax]
+            [jolt-lsp.types :as types]))
 
 (defn- diag [r severity code message]
   {:row (nth r 0) :col (nth r 1)
@@ -30,11 +31,21 @@
   [r]
   (not (or (:interop r) (:quoted r) (:inactive r) (:refer r))))
 
-(defn unresolved-namespace [refs]
-  (for [r refs
-        :when (and (:qualified r) (:unresolved r) (:prefix r) (checked-ref? r))]
-    (diag (row-range r) :error :unresolved-namespace
-          (str "Unknown namespace: " (:prefix r)))))
+(defn unresolved-namespace
+  "Qualified names whose prefix is no alias or required namespace. A
+  namespace the index has is only not required here (loaded elsewhere,
+  it works, but nothing guarantees the order): a warning, worded as
+  clj-kondo words it. One nobody defines is an error. `ns-state` as for
+  unresolved-var; without it every one is an error."
+  ([refs] (unresolved-namespace refs (constantly nil)))
+  ([refs ns-state]
+   (for [r refs
+         :when (and (:qualified r) (:unresolved r) (:prefix r) (checked-ref? r))]
+     (if (ns-state (:prefix r))
+       (diag (row-range r) :warning :unresolved-namespace
+             (str "Unresolved namespace " (:prefix r) ". Are you missing a require?"))
+       (diag (row-range r) :error :unresolved-namespace
+             (str "Unknown namespace: " (:prefix r)))))))
 
 (defn unresolved-symbol [refs]
   (for [r refs
@@ -98,6 +109,16 @@
         :when (and v (:deprecated v) (checked-ref? r) (not= (:caller r) (:fqn r)))]
     (diag (row-range r) :warning :deprecated-var
           (str "#'" (:fqn r) " is deprecated"))))
+
+(defn type-mismatch
+  "Arguments to a core fn whose type, as written, its spec does not take."
+  [refs]
+  (for [r refs
+        :when (and (:arg-tags r) (:fqn r) (checked-ref? r))
+        m (types/mismatches (:fqn r) (:arg-tags r))
+        :let [ar (get (:arg-ranges r) (:index m))]
+        :when ar]
+    (diag ar :error :type-mismatch (:message m))))
 
 (defn walk-findings
   "Findings the analysis walk decided (local calls, recur, overloads)."
@@ -228,12 +249,13 @@
            source (when (:parse-error file)
                     (or (:source opts) (try (slurp path) (catch Throwable _ ""))))]
        (->> (concat (when source (syntax-errors source))
-                    (unresolved-namespace refs)
+                    (unresolved-namespace refs (ns-state db))
                     (unresolved-symbol refs)
                     (invalid-arity refs var-of)
                     (unresolved-var refs var-of (ns-state db))
                     (private-call refs var-of)
                     (deprecated-var refs var-of)
+                    (type-mismatch refs)
                     (walk-findings (db/findings-in-file db fid))
                     (unused-namespaces requires refers u)
                     (unused-refers (filter :refer refs) u)

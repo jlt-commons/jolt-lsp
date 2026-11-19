@@ -14,6 +14,7 @@
             [jolt-lsp.paths :as paths]
             [jolt-lsp.resolve :as resolve]
             [jolt-lsp.settings :as settings]
+            [jolt-lsp.types :as types]
 ))
 
 (declare file-by-path normalize-path)
@@ -140,6 +141,13 @@
       (when (#{:defrecord :deftype} (:kind v))
         (:fqn v)))))
 
+(defn- builtin-ns?
+  "A namespace Jolt itself provides and always has loaded (jolt.host,
+  jolt.ffi): a qualified name into it needs no require."
+  [prefix]
+  (and (string/starts-with? prefix "jolt.")
+       (some? (find-ns (symbol prefix)))))
+
 (defn- resolve-occurrence [analysis all-vars ns text]
   (let [unq-ctor (when (and ns (not (string/index-of text "/")))
                    (ctor-fqn all-vars (str ns "/" text)))
@@ -148,6 +156,9 @@
       unq-ctor {:kind :var :fqn unq-ctor}
       (and (:fqn r) (not (contains? all-vars (:fqn r))) (ctor-fqn all-vars (:fqn r)))
       {:kind :var :fqn (ctor-fqn all-vars (:fqn r))}
+      (and (= :unresolved (:kind r)) (string/index-of text "/")
+           (builtin-ns? (subs text 0 (string/index-of text "/"))))
+      {:kind :core :fqn text}
       :else r)))
 
 (defn- ns-analysis [a vars-by-ns]
@@ -163,7 +174,9 @@
                             v (get vars-by-ns target)
                             :when (not (:private v))]
                         [(:name v) (:fqn v)]))
-     :core @core-names}))
+     ;; (:refer-clojure :exclude [==]): those names are not core here
+     :core (let [ex (get-in a [:ns-meta :core-excludes])]
+             (if (seq ex) (apply disj @core-names ex) @core-names))}))
 
 (defn- r4 [m prefix r]
   (let [r (or r [1 1 1 1])
@@ -200,6 +213,8 @@
        :qualified (boolean (:qualified occ))
        :in-call (boolean (:in-call occ))
        :arity (:arity occ)
+       :arg-tags (:arg-tags occ)
+       :arg-ranges (:arg-ranges occ)
        :caller (:caller occ)
        :unresolved (boolean (:unresolved occ))
        :interop (boolean (:interop occ))
@@ -270,7 +285,13 @@
                                  ;; a name used above its definition does not
                                  ;; resolve when Jolt loads the file
                                  unresolved (or (= :unresolved (:kind r)) (forward? occ r))]
-                             (cond-> (assoc occ :fqn (:fqn r) :unresolved unresolved)
+                             (cond-> (assoc occ :fqn (:fqn r) :unresolved unresolved
+                                            ;; a nested call's type is what its fn returns
+                                            :arg-tags (some->> (:arg-tags occ)
+                                                               (mapv (fn [t]
+                                                                       (if (map? t)
+                                                                         (types/ret-tag (head-fqn (:call t)) (:arity t))
+                                                                         t)))))
                                ;; a hook made it: not written code, so not checked
                                (:generated occ) (assoc :quoted true)
                                ;; :skip-args: calls under these macros are not checked

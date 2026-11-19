@@ -19,7 +19,8 @@
     jolt-lsp.spec.graph-spec
     jolt-lsp.spec.edit-spec
     jolt-lsp.spec.dep-text-spec
-    jolt-lsp.spec.arity-spec])
+    jolt-lsp.spec.arity-spec
+    jolt-lsp.spec.types-spec])
 
 (defn- pending? [report]
   (and (not (:ok report))

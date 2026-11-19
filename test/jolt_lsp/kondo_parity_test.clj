@@ -362,3 +362,107 @@
   (let [root (hook-project "(with-x [a 1 b 2] (+ a b))\n")
         d (db/build root)]
     (is (empty? (remove #(= :unused-referred-var (first %)) (diags d root "src/app/core.clj"))))))
+
+;; ---------------------------------------------------------------------------
+;; round 6: clj-kondo's local linters
+
+(defn- only [code body]
+  (filterv #(= code (first %)) (local-diags* body)))
+
+(deftest redundant-do
+  (is (seq (only :redundant-do "(defn f [c] (do (prn c) c))")))
+  (is (seq (only :redundant-do "(defn f [c] (let [a 1] (do (prn a) c)))")))
+  (is (seq (only :redundant-do "(defn f [c] (do c))")))
+  (is (seq (only :redundant-do "(defn f [c] (when c (do (prn c) c)))")))
+  (testing "parse/read-coll*'s old shape"
+    (is (seq (only :redundant-do "(defn- read-coll* [c n]\n  (do\n    (dotimes [_ n] (prn c))\n    (loop [acc []] acc)))"))))
+  (testing "a do that groups forms where one form is expected is fine"
+    (is (empty? (only :redundant-do "(defn f [c] (if c (do (prn c) 1) 2))")))
+    (is (empty? (only :redundant-do "(defn f [c] [(do (prn c) 1)])")))))
+
+(deftest redundant-let
+  (is (seq (only :redundant-let "(defn f [] (let [a 1] (let [b a] b)))")))
+  (is (empty? (only :redundant-let "(defn f [] (let [a 1] (prn a) (let [b a] b)))"))))
+
+(deftest loop-without-recur
+  (is (= [[:loop-without-recur "Loop without recur."]] (only :loop-without-recur "(defn f [] (loop [a 1] a))")))
+  (is (empty? (only :loop-without-recur "(defn f [] (loop [a 1] (when (pos? a) (recur (dec a)))))")))
+  (testing "a recur in a nested fn is that fn's"
+    (is (seq (only :loop-without-recur "(defn f [] (loop [a 1] (fn [x] (recur x))))")))))
+
+(deftest missing-body-in-when
+  (is (seq (only :missing-body-in-when "(defn f [x] (when x))")))
+  (is (empty? (only :missing-body-in-when "(defn f [x] (when x 1))"))))
+
+(deftest format-arg-count
+  (is (has? (local-diags* "(defn f [] (format \"%s %s\" 1))") :format "Format string expects 2 arguments instead of 1."))
+  (is (has? (local-diags* "(defn f [] (printf \"%d\\n\" 1 2))") :format "expects 1 arguments instead of 2"))
+  (is (empty? (only :format "(defn f [] (format \"%s %2$s %%\" 1 2) (format \"%s%n\" 1) (format fmt 1))"))))
+
+(deftest unused-value
+  (is (has? (local-diags* "(defn f [m] (assoc m :a 1) m)") :unused-value "Unused value"))
+  (is (has? (local-diags* "(defn f [m] 1 m)") :unused-value "Unused value: 1"))
+  (is (has? (local-diags* "(defn f [m] m m)") :unused-value "Unused value: m"))
+  (is (has? (local-diags* "(defn f [m] (let [a 1] :k a))") :unused-value "Unused value: :k"))
+  (testing "the last form, side effects, and a fn's condition map are fine"
+    (is (empty? (only :unused-value "(defn f [m] (prn m) (swap! m inc) (assoc m :a 1))")))
+    (is (empty? (only :unused-value "(defn f [m] {:pre [(map? m)]} m)")))))
+
+(deftest redefined-var
+  (is (has? (local-diags* "(defn f [] 1)\n(defn f [] 2)") :redefined-var "redefined var #'l.a/f"))
+  (is (empty? (only :redefined-var "(declare f)\n(defn f [] 1)"))))
+
+(deftest inline-def
+  (is (has? (local-diags* "(defn f [] (def x 1))") :inline-def "inline def"))
+  (is (empty? (only :inline-def "(let [a 1] (defn f [] a))"))))
+
+(deftest type-mismatch
+  (is (has? (local-diags* "(defn f [] (inc \"s\"))") :type-mismatch "Expected: number, received: string."))
+  (is (has? (local-diags* "(defn f [] (+ 1 :a))") :type-mismatch "received: keyword"))
+  (is (has? (local-diags* "(defn f [] (inc (str 1)))") :type-mismatch "received: string"))
+  (is (has? (local-diags* "(defn f [] (clojure.string/join \",\" :k))") :type-mismatch "Expected: seqable collection"))
+  (testing "unknown types never mismatch"
+    (is (empty? (only :type-mismatch "(defn f [x] (inc x) (+ 1 (count x)) (-> \"s\" inc) (map inc [1 2]))")))
+    (is (empty? (only :type-mismatch "(defn inc [x] x)\n(defn g [] (inc \"s\"))")))))
+
+(deftest if-let-branches-are-not-a-body
+  (is (empty? (filter #(#{:unused-value :redundant-do} (first %))
+                      (local-diags* "(defn f [m] (if-let [v (get m 1)] {:v v} (do (prn m) 2)) (if-some [v m] v (assoc m :a 1)))")))))
+
+(deftest locals-shadow-special-forms
+  (let [ds (local-diags* "(defn f [m] (let [{:keys [fn arg]} m] (if arg (fn (arg 1)) (fn))))")]
+    (is (empty? (filter #(#{:unused-value :unresolved-symbol :unused-binding} (first %)) ds)))))
+
+(deftest for-bodies-and-fn-literal-dos
+  (is (empty? (only :redundant-do "(defn f [xs] (for [x xs] (do (prn x) x)) #(do 1) #(do %))"))))
+
+(deftest recur-inside-macros-and-or-counts-for-the-loop
+  (is (empty? (only :loop-without-recur "(defn f [] (loop [] (receive [m (do (prn m) (recur))])))")))
+  (is (empty? (local-diags* "(defn f [xs] (loop [a xs] (or (first a) (recur (rest a)))))"))))
+
+(deftest refer-clojure-exclude-is-respected
+  (is (has? (local-diags* "(ns l.a (:refer-clojure :exclude [inc]))\n(defn f [] (inc 1))") :unresolved-symbol "inc"))
+  (is (empty? (only :type-mismatch "(ns l.a (:refer-clojure :exclude [==]) (:require [some.logic :refer :all]))\n(defn f [q] (== q [1 2]))"))))
+
+(deftest reader-conditional-defs-are-not-redefinitions
+  (is (empty? (only :redefined-var "#?(:clj (defn f [] 1) :cljs (defn f [] 2))"))))
+
+(deftest threaded-when-has-its-test
+  (is (empty? (only :missing-body-in-when "(defn f [x] (-> x nil? (when (throw (ex-info \"x\" {})))))"))))
+
+(deftest syntax-quoted-special-forms-walk-their-unquotes
+  (is (empty? (only :unused-binding "(defmacro defword [sym args & body] `(def ~sym (fn ~sym ~args ~@body)))"))))
+
+(deftest unrequired-but-known-namespaces
+  (let [root (project {"src/n/a.clj" "(ns n.a)\n(defn f [] 1)\n"
+                       "src/n/b.clj" "(ns n.b)\n(defn g [] (n.a/f) (nope.ns/x) (jolt.host/foo))\n"})
+        ds (diagnostics/file-diagnostics (db/build root) (str root "/src/n/b.clj"))
+        by (into {} (map (juxt :message :severity)) (filter #(= :unresolved-namespace (:code %)) ds))]
+    (is (= :warning (get by "Unresolved namespace n.a. Are you missing a require?")))
+    (is (= :error (get by "Unknown namespace: nope.ns")))
+    (is (= 2 (count by)))))
+
+(deftest top-level-require-adds-aliases
+  (let [root (project {"src/t/gui.clj" "(ns t.gui)\n(def tab (atom 0))\n"
+                       "src/t/h.clj" "(ns t.h)\n(require '[t.gui :as gui])\n(defn f [] @gui/tab)\n"})]
+    (is (empty? (diags root "src/t/h.clj")))))
