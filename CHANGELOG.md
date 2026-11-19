@@ -1,12 +1,15 @@
 # Changelog
 
-## Unreleased
+## v0.5.1 - 2026-11-19
 
 - The optional clj-kondo bridge is gone: jolt-lsp no longer shells out to a
   `clj-kondo` binary, since its own diagnostics now cover clj-kondo's checks,
   config and hooks. The `:kondo` setting, the `--kondo` and `--no-kondo`
   flags and the `kondo` argument of `jolt_diagnostics` are removed, so
   results no longer depend on what else is installed.
+- Any `jolt.*` namespace counts as built in. The standalone binary decided by
+  loading the namespace, and it cannot load every Jolt namespace a project's
+  runtime has (`jolt.nrepl`), so `lint` in CI reported them unknown.
 
 ## v0.5.0 - 2026-11-19
 
