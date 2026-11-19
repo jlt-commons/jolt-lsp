@@ -239,7 +239,8 @@
      :kondo k
      :source (:source opts)
      :custom-linters (:custom-linters cfg)
-     :clj-depend (:clj-depend cfg)}))
+     :clj-depend (:clj-depend cfg)
+     :levels (:levels (settings/lint-config (root-for root)))}))
 
 (defn diagnostics* [root opts]
   (let [d (ensure-db root)

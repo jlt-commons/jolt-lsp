@@ -9,8 +9,38 @@
   project under `/tmp` or `/var`. A push for an open document now uses the
   URI from its `didOpen`, and a file open under two URIs gets a push for
   each. The same URI names the document in definitions, references, rename
-  edits and other locations. A file the client never opened keeps its
-  canonical URI. (#7)
+  edits and other locations. A file the client never opened is named under
+  the workspace root as the client gave it in `initialize`, so a definition
+  or reference into it opens the same buffer the client's own path would,
+  not a second copy under the canonical path. (#7)
+- URIs are percent-encoded and decoded properly. Only `%20` was decoded
+  before and nothing was encoded, so a path with a space, `#`, `+` or a
+  non-ASCII character went wrong in one direction or the other.
+- Diagnostics now cover what clj-kondo checks: call arity (project vars,
+  core fns, local fns, `recur`, threading forms), unresolved vars, private
+  and deprecated uses, forward references, redundant `do` and `let`, loops
+  without `recur`, `when` with no body, format string argument counts,
+  unused values, redefined vars, inline defs, and type mismatches, with
+  types inferred through locals, fn returns across namespaces, `def`
+  values, type hints and clj-kondo's `:type-mismatch` config. Some clj-kondo
+  code is adapted, as `NOTICE` lists.
+- clj-kondo hooks (`:analyze-call`, `:macroexpand`) run natively, from
+  `.clj-kondo`, its imports and `:config-paths`, and the
+  `clj-kondo.exports` directories dependencies ship. `:hooks false` in
+  `.jolt-lsp/config.edn` turns them off.
+- The lint config honours clj-kondo's `:level` per linter and
+  `:invalid-arity :skip-args`.
+- A qualified name into a namespace the project has but the file does not
+  require is now a warning ("Are you missing a require?") instead of an
+  unknown-namespace error.
+- Editing a file now re-resolves the files that depend on it; they kept
+  stale results until a rebuild. `:deprecated` metadata is indexed and shown
+  by hover, and `:refer-clojure :exclude` is respected. A batch of false
+  unresolved symbols is fixed: `clojure.core/defn` written qualified,
+  `declare` with metadata, `areduce`/`amap`, reader conditionals in params
+  and libspecs, `:refer :all` from an unindexed namespace, locals named like
+  special forms, special forms inside a syntax-quote, top-level `require`
+  calls, and Jolt's `jolt.*` namespaces.
 
 ## v0.4.0 - 2026-11-19
 

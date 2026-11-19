@@ -14,6 +14,7 @@
             [jolt-lsp.paths :as paths]
             [jolt-lsp.resolve :as resolve]
             [jolt-lsp.settings :as settings]
+            [jolt-lsp.types :as types]
 ))
 
 (declare file-by-path normalize-path)
@@ -49,7 +50,8 @@
 
 (def ^:private tables
   [:file :namespace :ns-alias :ns-require :ns-refer :ns-import :var-def
-   :var-ref :local-def :local-ref :keyword-def :keyword-ref :call-edge :ns-dep])
+   :var-ref :local-def :local-ref :keyword-def :keyword-ref :call-edge :ns-dep
+   :finding])
 
 ;; ---------------------------------------------------------------------------
 ;; analyses and the cache
@@ -57,16 +59,17 @@
 (def ^:dynamic *lint* "The project's lint config, see settings/lint-config." {})
 
 (defn- analyze-source [path source external]
-  (binding [analyze/*lint-as* (:lint-as *lint*)]
+  (binding [analyze/*lint-as* (:lint-as *lint*)
+            analyze/*hooks* (when-not external (:hooks *lint*))]
     (cond
       (= :edn (paths/dialect path)) (analyze/analyze-edn source path)
       external (analyze/analyze-shallow source path)
       :else (analyze/analyze source path))))
 
 (defn- content-hash
-  "Analyses depend on the text and on :lint-as."
+  "Analyses depend on the text, :lint-as and the hooks."
   [source]
-  (hash [source (:lint-as *lint*)]))
+  (hash [source (:lint-as *lint*) (:stamp (:hooks *lint*))]))
 
 (defn- analysis-entry-text [path source external]
   {:path path
@@ -125,18 +128,38 @@
                    (assoc seen (:fqn v) v)))
                {})))
 
+(defn- ctor-fqn
+  "For a resolved ->Rec or map->Rec, the record or type's fqn, else nil."
+  [all-vars fqn]
+  (when-let [i (some-> fqn (string/index-of "/"))]
+    (let [nsn (subs fqn 0 i)
+          nm (subs fqn (inc i))
+          base (cond (string/starts-with? nm "map->") (subs nm 5)
+                     (string/starts-with? nm "->") (subs nm 2)
+                     :else nil)
+          v (when (seq base) (get all-vars (str nsn "/" base)))]
+      (when (#{:defrecord :deftype} (:kind v))
+        (:fqn v)))))
+
+(defn- builtin-ns?
+  "A namespace Jolt itself provides and always has loaded (jolt.host,
+  jolt.ffi): a qualified name into it needs no require."
+  [prefix]
+  (and (string/starts-with? prefix "jolt.")
+       (some? (find-ns (symbol prefix)))))
+
 (defn- resolve-occurrence [analysis all-vars ns text]
-  (let [ctor-base (cond
-                    (string/starts-with? text "map->") (subs text 5)
-                    (string/starts-with? text "->") (subs text 2)
-                    :else nil)
-        ctor-fqn (when ctor-base
-                   (when-let [v (get all-vars (if ns (str ns "/" ctor-base) ctor-base))]
-                     (when (#{:defrecord :deftype} (:kind v))
-                       (:fqn v))))]
-    (if ctor-fqn
-      {:kind :var :fqn ctor-fqn}
-      (resolve/resolve-name analysis ns text))))
+  (let [unq-ctor (when (and ns (not (string/index-of text "/")))
+                   (ctor-fqn all-vars (str ns "/" text)))
+        r (when-not unq-ctor (resolve/resolve-name analysis ns text))]
+    (cond
+      unq-ctor {:kind :var :fqn unq-ctor}
+      (and (:fqn r) (not (contains? all-vars (:fqn r))) (ctor-fqn all-vars (:fqn r)))
+      {:kind :var :fqn (ctor-fqn all-vars (:fqn r))}
+      (and (= :unresolved (:kind r)) (string/index-of text "/")
+           (builtin-ns? (subs text 0 (string/index-of text "/"))))
+      {:kind :core :fqn text}
+      :else r)))
 
 (defn- ns-analysis [a vars-by-ns]
   (let [refer-all (get-in a [:ns-meta :refer-all])]
@@ -151,7 +174,81 @@
                             v (get vars-by-ns target)
                             :when (not (:private v))]
                         [(:name v) (:fqn v)]))
-     :core @core-names}))
+     ;; (:refer-clojure :exclude [==]): those names are not core here
+     :core (let [ex (get-in a [:ns-meta :core-excludes])]
+             (if (seq ex) (apply disj @core-names ex) @core-names))}))
+
+;; ---------------------------------------------------------------------------
+;; inferred types
+;;
+;; The walk leaves a call's type as {:call head :arity n} and a var's as
+;; {:var name}: what they are depends on the file's aliases and on other
+;; files. Each file's are first put in terms of fqns ({:fqn f :arity n},
+;; {:var-fqn f}), then resolved across the project: a fn's spec (inferred
+;; from its bodies, or the user's :type-mismatch config, or a core spec)
+;; gives what it returns, a def what it holds.
+
+(defn- normalize-tag [res t]
+  (cond (set? t) (set (map #(normalize-tag res %) t))
+        (and (map? t) (:call t)) {:fqn (res (:call t)) :arity (:arity t)}
+        (and (map? t) (:var t)) {:var-fqn (res (:var t))}
+        :else t))
+
+(defn- normalize-var [res v]
+  (cond-> v
+    (:type-spec v) (update-in [:type-spec :arities]
+                              update-vals (fn [a] (update a :ret #(normalize-tag res %))))
+    (:val-tag v) (update :val-tag #(normalize-tag res %))))
+
+(declare resolve-occurrence ns-analysis)
+
+(defn- normalize-analyses
+  "Each analysis with its vars' types in fqn terms, resolved as its own
+  file reads names."
+  [analyses]
+  (let [raw-by-ns (group-by :ns (mapcat :vars analyses))]
+    (mapv (fn [a]
+            (if (some #(or (:type-spec %) (:val-tag %)) (:vars a))
+              (let [a-res (ns-analysis a raw-by-ns)
+                    res (memoize #(:fqn (resolve-occurrence a-res {} (:ns a) %)))]
+                (update a :vars #(mapv (partial normalize-var res) %)))
+              a))
+          analyses)))
+
+(defn- spec-arity [spec n]
+  (let [as (:arities spec)]
+    (or (get as n)
+        (when-let [v (:varargs as)]
+          (when (>= n (or (:min-arity v) 0)) v)))))
+
+(defn- resolve-tag
+  "A normalized type made concrete. `extra` is the user's specs by fqn;
+  `depth` bounds how far returns are followed (and so ends recursion)."
+  [all-vars extra t depth]
+  (cond
+    (keyword? t) t
+    (set? t) (let [rs (map #(resolve-tag all-vars extra % depth) t)
+                   flat (set (mapcat #(if (set? %) % [%]) rs))]
+               (cond (contains? flat :any) :any
+                     (= 1 (count flat)) (first flat)
+                     :else flat))
+    (not (pos? depth)) :any
+    (:var-fqn t) (if-let [v (get all-vars (:var-fqn t))]
+                   (resolve-tag all-vars extra (or (:val-tag v) :any) (dec depth))
+                   :any)
+    (:fqn t) (let [f (:fqn t)
+                   sp (or (get extra f) (:type-spec (get all-vars f)))]
+               (cond (nil? f) :any
+                     sp (resolve-tag all-vars extra (or (:ret (spec-arity sp (:arity t))) :any) (dec depth))
+                     :else (types/ret-tag {} f (:arity t))))
+    :else :any))
+
+(def ^:private type-depth 6)
+
+(defn- resolve-spec [all-vars extra spec]
+  (when spec
+    (update spec :arities update-vals
+            (fn [a] (update a :ret #(resolve-tag all-vars extra (or % :any) type-depth))))))
 
 (defn- r4 [m prefix r]
   (let [r (or r [1 1 1 1])
@@ -160,17 +257,21 @@
            (k "row") (nth r 0) (k "col") (nth r 1)
            (k "end-row") (nth r 2) (k "end-col") (nth r 3))))
 
-(defn- var-row [file-id v]
+(defn- var-row [file-id v type-spec]
   (-> {:fqn (:fqn v)
        :ns (:ns v)
        :name (:name v)
        :kind (:kind v)
        :file-id file-id
        :private (boolean (:private v))
-       :deprecated false
+       :deprecated (boolean (:deprecated v))
        :doc (:doc v)
        :arglists (:arglists v)
        :params (pr-str (or (:params v) []))
+       :fixed-arities (:fixed-arities v)
+       :varargs-min-arity (:varargs-min-arity v)
+       :macro (= :defmacro (:kind v))
+       :type-spec type-spec
        :defined-by (:defined-by v)}
       (r4 "" (:range v))
       (r4 "name-" (:name-range v))))
@@ -184,10 +285,15 @@
        :fqn (:fqn occ)
        :qualified (boolean (:qualified occ))
        :in-call (boolean (:in-call occ))
+       :arity (:arity occ)
+       :arg-tags (:arg-tags occ)
+       :arg-ranges (:arg-ranges occ)
        :caller (:caller occ)
        :unresolved (boolean (:unresolved occ))
        :interop (boolean (:interop occ))
        :quoted (boolean (:quoted occ))
+       :var-quoted (boolean (:var-quoted occ))
+       :dsl (boolean (:dsl occ))
        :inactive (boolean (:inactive occ))
        :refer (boolean (:refer occ))}
       (r4 "" (:range occ))
@@ -215,7 +321,7 @@
                               v (get all-vars (:fqn r))]
                           (and (= :var (:kind r))
                                (or (nil? v) (= :defmacro (:kind v)))))))
-        {:keys [exclude-symbols exclude-calls exclude-namespaces]} *lint*
+        {:keys [exclude-symbols exclude-calls exclude-namespaces skip-arity dsl-heads]} *lint*
         head-fqn (memoize (fn [h] (:fqn (resolve-occurrence a-res all-vars ns h))))
         excluded? (fn [occ]
                     (or (contains? exclude-symbols (:text occ))
@@ -226,16 +332,53 @@
                                     (let [names (get exclude-calls f)]
                                       (or (nil? names) (contains? names (:text occ)))))))
                               (:heads occ))))
+        ;; where this file first defines (or declares) each of its names
+        own-defs (reduce (fn [m v]
+                           (let [p [(nth (:range v) 0) (nth (:range v) 1)]]
+                             (if (and (= ns (:ns v)) (neg? (compare p (get m (:name v) [Long/MAX_VALUE 0]))))
+                               (assoc m (:name v) p)
+                               m)))
+                         {} (:vars a))
+        refers (get-in a [:ns-meta :refers])
+        ;; :refer :all from a namespace the index has no vars for: any
+        ;; bare name may come from it, so none is reported unresolved
+        blind-refer-all? (some #(and (empty? (get vars-by-ns %))
+                                     (not (contains? resolve/core-namespaces %)))
+                               (get-in a [:ns-meta :refer-all]))
+        forward? (fn [occ r]
+                   (and (not (:qualified occ))
+                        (not (:in-comment occ))
+                        (not (contains? refers (:text occ)))
+                        (= (:fqn r) (str ns "/" (:text occ)))
+                        (when-let [p (get own-defs (:text occ))]
+                          (neg? (compare [(nth (:range occ) 0) (nth (:range occ) 1)] p)))))
         resolved (when-not external?
                    (mapv (fn [occ]
                            (let [r (resolve-occurrence a-res all-vars ns (:text occ))
-                                 unresolved (= :unresolved (:kind r))]
-                             (cond-> (assoc occ :fqn (:fqn r) :unresolved unresolved)
+                                 ;; a name used above its definition does not
+                                 ;; resolve when Jolt loads the file
+                                 unresolved (or (= :unresolved (:kind r)) (forward? occ r))]
+                             (cond-> (assoc occ :fqn (:fqn r) :unresolved unresolved
+                                            ;; a nested call's type is what its fn returns
+                                            :arg-tags (some->> (:arg-tags occ)
+                                                               (mapv #(resolve-tag all-vars (:type-specs *lint*)
+                                                                                   (normalize-tag head-fqn %)
+                                                                                   type-depth))))
+                               ;; a hook made it: not written code, so not checked
+                               (:generated occ) (assoc :quoted true)
+                               ;; :skip-args: calls under these macros are not checked
+                               (and (:arity occ) (seq skip-arity)
+                                    (some #(contains? skip-arity (head-fqn %)) (:heads occ)))
+                               (assoc :arity nil)
+                               (and (seq dsl-heads)
+                                    (some #(contains? dsl-heads (head-fqn %)) (:heads occ)))
+                               (assoc :arity nil :dsl true)
                                ;; inside a macro (or a call the index cannot
                                ;; see): its arguments may be data, not code;
                                ;; or the config excludes it, as kondo's does
                                (and unresolved (or (some opaque-head? (:heads occ))
-                                                   (excluded? occ)))
+                                                   (excluded? occ)
+                                                   (and blind-refer-all? (not (:qualified occ)))))
                                (assoc :quoted true))))
                          (:occurrences a)))
         meta (:ns-meta a)]
@@ -253,6 +396,7 @@
                    :external external?
                    :mtime (or (:mtime a) 0)
                    :hash (str (:hash a))
+                   :open-ns (boolean (:open-ns a))
                    :parse-error (when-not (:parse-ok a) (str (:parse-error a)))})
           (update :namespace conj {:id file-id :file-id file-id :name ns})
           (update :ns-alias into
@@ -276,7 +420,10 @@
           (update :var-def into
                   (->> (:vars a)
                        (filter (fn [v] (identical? (get all-vars (:fqn v)) v)))
-                       (map (partial var-row file-id))))
+                       (map (fn [v]
+                              (var-row file-id v
+                                       (or (get (:type-specs *lint*) (:fqn v))
+                                           (resolve-spec all-vars (:type-specs *lint*) (:type-spec v))))))))
           (update :keyword-def into
                   (for [k (vals (reduce #(if (contains? %1 (:fqn %2)) %1 (assoc %1 (:fqn %2) %2))
                                         {} (filter :def? (:keywords a))))]
@@ -303,6 +450,7 @@
                        :name (:name l)
                        :kind (:kind l)
                        :keys-destructuring (boolean (:keys-destructuring l))
+                       :generated (boolean (:generated l))
                        :destructured (boolean (:destructured l))}
                       (r4 "" r)
                       (r4 "scope-" s))))
@@ -311,6 +459,9 @@
                       :let [id (get local-ids (:local-id ref))]
                       :when id]
                   (r4 {:local-id id :file-id file-id :name (:name ref)} "" (:range ref))))
+        (update :finding into
+                (for [f (:findings a)]
+                  (r4 (dissoc f :range) "" (:range f))))
         (update :keyword-ref into
                 (for [k (remove :def? (:keywords a))]
                   (r4 {:fqn (:fqn k) :file-id file-id :notation (:notation k)}
@@ -420,7 +571,7 @@
 (defn build-from-analyses
   "Index these analyses. Returns the index."
   [root entries]
-  (let [analyses (analysis-maps entries)
+  (let [analyses (normalize-analyses (analysis-maps entries))
         all-vars (dedupe-vars (mapcat :vars analyses))
         vars-by-ns (group-by :ns (vals all-vars))]
     (first
@@ -428,13 +579,13 @@
                (let [r (file-rows (assoc a :project root) file-id
                                   all-vars vars-by-ns next-local)]
                  [(put-file db file-id (:rows r)) (:next-local r)]))
-             [(empty-db) 0]
+             [(assoc (empty-db) :type-specs (:type-specs *lint*)) 0]
              (map-indexed (fn [i a] [(inc i) a]) analyses)))))
 
 (defmacro ^:private with-lint
   "Run body with the project's lint config bound."
   [root & body]
-  `(binding [*lint* (settings/lint-config ~root)] ~@body))
+  `(binding [*lint* (settings/lint-config ~root {:deps? true})] ~@body))
 
 (defn build
   "Index every source file under root from scratch. Returns the index."
@@ -466,19 +617,46 @@
       (remember! root entries)
       (timed "build index" (build-from-analyses root entries)))))
 
+(defn- dependent-analyses
+  "The other project files whose resolution can change when the namespaces
+  in `nss` change: files that require one of them, or share one (in-ns)."
+  [analyses path nss]
+  (let [nss (set (remove nil? nss))]
+    (filter (fn [a]
+              (and (not= path (:file-path a))
+                   (not (:external a))
+                   (or (contains? nss (:ns a))
+                       (some nss (get-in a [:ns-meta :requires])))))
+            analyses)))
+
+(defn- re-row
+  "Rebuild one file's rows in db. Returns db."
+  [db root a file-id all-vars vars-by-ns]
+  (let [fr (file-rows (assoc a :project root) file-id all-vars vars-by-ns
+                      (:next-local db 0))]
+    (-> (drop-file db file-id)
+        (put-file file-id (:rows fr))
+        (update :next-local (fnil max 0) (:next-local fr)))))
+
 (defn- patch-file
-  "Replace one file's rows from its new analysis entry."
+  "Replace one file's rows from its new analysis entry, and re-resolve the
+  files that depend on its namespace, since a var it adds or drops changes
+  what their names resolve to."
   [db root path entry]
   (let [cached (assoc (cached-entries root) path entry)
-        analyses (analysis-maps (vals cached))
+        analyses (normalize-analyses (analysis-maps (vals cached)))
         all-vars (dedupe-vars (mapcat :vars analyses))
         vars-by-ns (group-by :ns (vals all-vars))
         a (some #(when (= (:file-path %) path) %) analyses)
         old (file-by-path db path)
         file-id (or (:id old) (inc (reduce max 0 (keys (:files db)))))
-        fr (file-rows (assoc a :project root) file-id all-vars vars-by-ns
-                      (:next-local db 0))
-        db' (put-file (drop-file db file-id) file-id (:rows fr))]
+        db' (re-row db root a file-id all-vars vars-by-ns)
+        db' (reduce (fn [d dep]
+                      (if-let [f (file-by-path d (:file-path dep))]
+                        (re-row d root dep (:id f) all-vars vars-by-ns)
+                        d))
+                    db'
+                    (dependent-analyses analyses path [(:ns old) (:ns a)]))]
     (swap! mem-cache assoc root cached)
     db'))
 
@@ -584,7 +762,13 @@
 (defn local-defs-in-file [db file-id] (in-file db :local-def file-id))
 (defn local-refs-in-file [db file-id] (in-file db :local-ref file-id))
 (defn keyword-defs-in-file [db file-id] (in-file db :keyword-def file-id))
+(defn findings-in-file [db file-id] (in-file db :finding file-id))
 (defn keyword-refs-in-file [db file-id] (in-file db :keyword-ref file-id))
+
+(defn ns-files
+  "Every indexed file (project or dependency) of ns."
+  [db ns]
+  (multi db :file/by-ns ns))
 
 (defn file-by-ns
   "The project file defining ns, preferring a project file over a

@@ -174,6 +174,7 @@
            :doc (:doc v)
            :arglists (:arglists v)
            :private (:private v)
+           :deprecated (:deprecated v)
            :defined-by (:defined-by v)
            :code (source-text db v))))
 

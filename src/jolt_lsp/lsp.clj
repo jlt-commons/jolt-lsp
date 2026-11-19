@@ -32,11 +32,20 @@
 
 (defn- client-uris
   "The URIs the client has `path` open under, in the order it opened them,
-  or the file URI of the canonical path when it isn't open. The index keys
-  files by canonical path (symlinks resolved), so a document opened through
-  a symlink is named the way the client opened it."
+  or, when it isn't open, its URI under the workspace root as the client
+  named it. The index keys files by canonical path (symlinks resolved), so
+  a document opened through a symlink is named the way the client opened
+  it."
   [path]
-  (or (seq (get-in @state [:uris path])) [(paths/file-uri path)]))
+  (or (seq (get-in @state [:uris path]))
+      ;; not open: under the root as the client named it, so a location in
+      ;; it opens the same buffer as the client's own path would
+      (let [{:keys [client-root canonical-root]} @state]
+        [(paths/file-uri
+          (if (and client-root canonical-root (not= client-root canonical-root)
+                   (string/starts-with? path (str canonical-root "/")))
+            (str client-root (subs path (count canonical-root)))
+            path))])))
 
 (defn- path->uri [path]
   (first (client-uris path)))
@@ -375,7 +384,10 @@
       (let [uri (or (:rootUri params) (get-in params [:workspaceFolders 0 :uri]))
             root (or (some-> uri paths/uri->path) (System/getProperty "user.dir"))]
         (api/ensure-db root)
-        (swap! state assoc :initialized? true :client-capabilities (:capabilities params))
+        (swap! state assoc :initialized? true :client-capabilities (:capabilities params)
+               ;; the root as the client names it, and as the index does
+               :client-root (string/replace root #"/+$" "")
+               :canonical-root (db/normalize-path root))
         (respond {:capabilities
                   {:textDocumentSync {:openClose true :change 1 :save true}
                    :definitionProvider true

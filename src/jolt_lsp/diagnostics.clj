@@ -5,11 +5,14 @@
   :refer (`[app.routes]`, `app.routes`) is a side-effect load and is never
   unused; an alias counts as used by `::alias/kw` keywords too."
   (:require [clojure.string :as string]
+            [jolt-lsp.arity :as arity]
+            [jolt-lsp.core-info :as core-info]
             [jolt-lsp.custom :as custom]
             [jolt-lsp.db :as db]
             [jolt-lsp.kondo :as kondo]
             [jolt-lsp.layer :as layer]
-            [jolt-lsp.syntax :as syntax]))
+            [jolt-lsp.syntax :as syntax]
+            [jolt-lsp.types :as types]))
 
 (defn- diag [r severity code message]
   {:row (nth r 0) :col (nth r 1)
@@ -28,17 +31,114 @@
   [r]
   (not (or (:interop r) (:quoted r) (:inactive r) (:refer r))))
 
-(defn unresolved-namespace [refs]
-  (for [r refs
-        :when (and (:qualified r) (:unresolved r) (:prefix r) (checked-ref? r))]
-    (diag (row-range r) :error :unresolved-namespace
-          (str "Unknown namespace: " (:prefix r)))))
+(defn unresolved-namespace
+  "Qualified names whose prefix is no alias or required namespace. A
+  namespace the index has is only not required here (loaded elsewhere,
+  it works, but nothing guarantees the order): a warning, worded as
+  clj-kondo words it. One nobody defines is an error. `ns-state` as for
+  unresolved-var; without it every one is an error."
+  ([refs] (unresolved-namespace refs (constantly nil)))
+  ([refs ns-state]
+   (for [r refs
+         :when (and (:qualified r) (:unresolved r) (:prefix r) (checked-ref? r))]
+     (if (ns-state (:prefix r))
+       (diag (row-range r) :warning :unresolved-namespace
+             (str "Unresolved namespace " (:prefix r) ". Are you missing a require?"))
+       (diag (row-range r) :error :unresolved-namespace
+             (str "Unknown namespace: " (:prefix r)))))))
 
 (defn unresolved-symbol [refs]
   (for [r refs
         :when (and (not (:qualified r)) (:unresolved r) (checked-ref? r))]
     (diag (row-range r) :error :unresolved-symbol
           (str "Unresolved symbol: " (:text r)))))
+
+(defn- var-facts
+  "What the index (or, for a core var, the running Jolt) knows about the
+  var an fqn names, or nil."
+  [var-of fqn]
+  (or (var-of fqn) (core-info/lookup fqn)))
+
+(defn invalid-arity
+  "Calls whose argument count no arity of the called var takes. `var-of`
+  looks a var up by fqn."
+  [refs var-of]
+  (for [r refs
+        :let [n (:arity r)]
+        :when (and n (:fqn r) (checked-ref? r))
+        :let [v (var-facts var-of (:fqn r))
+              info {:fixed-arities (set (:fixed-arities v))
+                    :varargs-min-arity (:varargs-min-arity v)}]
+        :when (and v (arity/known? info) (not (arity/matches? info n)))]
+    (diag (row-range r) :error :invalid-arity
+          (arity/arity-message info (:fqn r) n))))
+
+(defn- fqn-ns [fqn]
+  (when-let [i (string/index-of fqn "/")] (subs fqn 0 i)))
+
+(defn unresolved-var
+  "Qualified names into a namespace that is known (indexed, or a loaded
+  core namespace) but has no such var. A namespace with a def-like macro
+  the walk cannot see into is left alone: the var may be made there.
+  `ns-state` answers :closed, :open or nil (unknown) for a namespace."
+  [refs var-of ns-state]
+  (for [r refs
+        :let [fqn (:fqn r)]
+        :when (and (:qualified r) fqn (not (:unresolved r)) (checked-ref? r)
+                   (nil? (var-facts var-of fqn))
+                   (= :closed (ns-state (fqn-ns fqn))))]
+    (diag (row-range r) :warning :unresolved-var
+          (str "Unresolved var: " (:text r)))))
+
+(defn private-call
+  "Uses of another namespace's private var, other than through #' or a
+  syntax-quote."
+  [refs var-of]
+  (for [r refs
+        :let [v (some-> (:fqn r) var-of)]
+        :when (and v (:private v) (checked-ref? r) (not (:var-quoted r)) (not (:dsl r))
+                   (not= (:ns v) (:ns r)))]
+    (diag (row-range r) :error :private-call
+          (str "#'" (:fqn r) " is private"))))
+
+(defn deprecated-var
+  "Uses of a deprecated var, outside its own definition."
+  [refs var-of]
+  (for [r refs
+        :let [v (some->> (:fqn r) (var-facts var-of))]
+        :when (and v (:deprecated v) (checked-ref? r) (not= (:caller r) (:fqn r)))]
+    (diag (row-range r) :warning :deprecated-var
+          (str "#'" (:fqn r) " is deprecated"))))
+
+(defn type-mismatch
+  "Arguments whose type, as inferred, the called fn's spec does not take:
+  the user's :type-mismatch spec, the fn's own (from its type hints), or a
+  core spec. `user-specs` {fqn spec}; `var-of` looks a var up."
+  [refs user-specs var-of]
+  (for [r refs
+        :when (and (:arg-tags r) (:fqn r) (checked-ref? r))
+        :let [own (:type-spec (var-of (:fqn r)))
+              specs (cond-> (or user-specs {})
+                      (and own (not (contains? user-specs (:fqn r)))) (assoc (:fqn r) own))]
+        m (types/mismatches specs (:fqn r) (:arg-tags r))
+        :let [ar (get (:arg-ranges r) (:index m))]
+        :when ar]
+    (diag ar :error :type-mismatch (:message m))))
+
+(defn aliased-referred-var
+  "A var the file refers, then names through an alias anyway."
+  [refs]
+  (let [referred (set (keep #(when (:refer %) (:fqn %)) refs))]
+    (for [r refs
+          :when (and (:qualified r) (contains? referred (:fqn r)) (checked-ref? r))]
+      (diag (row-range r) :info :aliased-referred-var
+            (str "Var " (:name r) " is referred but used via alias: " (:prefix r))))))
+
+(defn walk-findings
+  "Findings the analysis walk decided (local calls, recur, overloads)."
+  [findings]
+  (for [f findings]
+    (diag (row-range f) (:severity f) (:code f) (:message f))))
 
 (defn- usage
   "What a file uses: written prefixes, resolved fqns, keyword namespaces."
@@ -98,6 +198,7 @@
     (for [l locals
           :when (and (not (contains? used (:id l)))
                      (not (quiet-local-kinds (:kind l)))
+                     (not (:generated l))
                      (not (string/starts-with? (:name l) "_")))]
       (diag (row-range l) :warning :unused-binding
             (str "Unused binding: " (:name l))))))
@@ -123,9 +224,31 @@
                     (or (syntax/explain d) "the file does not read"))
               :problem (:reason d))])))
 
+(defn- ns-state
+  "For a namespace name: :closed when every var it has is indexed, :open
+  when a file of it defines vars the walk cannot see, nil when unknown."
+  [db]
+  (fn [nsn]
+    (let [files (db/ns-files db nsn)]
+      (cond
+        (seq files) (if (some :open-ns files) :open :closed)
+        (core-info/loaded-ns? nsn) :closed
+        :else nil))))
+
+(defn apply-level
+  "A built-in finding at the level the config gives its code (kondo's
+  `{:linters {:code {:level ...}}}`), or nil when the level is :off."
+  [levels d]
+  (let [level (and (= :jolt-lsp (:source d)) (get levels (:code d)))]
+    (cond
+      (nil? level) d
+      (= :off level) nil
+      :else (assoc d :severity level))))
+
 (defn file-diagnostics
   "Diagnostics for one indexed file. opts: :source (the text, when it is
-  not the file on disk), :kondo, :custom-linters, :clj-depend, :root."
+  not the file on disk), :kondo, :custom-linters, :clj-depend, :root,
+  :levels (a severity, or :off, per code)."
   ([db path] (file-diagnostics db path {}))
   ([db path opts]
    (when-let [file (db/file-by-path db path)]
@@ -136,11 +259,19 @@
            requires (db/file-requires db path)
            refers (db/file-refers db path)
            u (usage refs kw-refs)
+           var-of #(db/var-by-fqn db %)
            source (when (:parse-error file)
                     (or (:source opts) (try (slurp path) (catch Throwable _ ""))))]
        (->> (concat (when source (syntax-errors source))
-                    (unresolved-namespace refs)
+                    (unresolved-namespace refs (ns-state db))
                     (unresolved-symbol refs)
+                    (invalid-arity refs var-of)
+                    (unresolved-var refs var-of (ns-state db))
+                    (private-call refs var-of)
+                    (deprecated-var refs var-of)
+                    (type-mismatch refs (:type-specs db) var-of)
+                    (aliased-referred-var refs)
+                    (walk-findings (db/findings-in-file db fid))
                     (unused-namespaces requires refers u)
                     (unused-refers (filter :refer refs) u)
                     (duplicate-requires requires)
@@ -152,6 +283,7 @@
                       (custom/lint db (:root opts) path opts))
                     (when (:clj-depend opts)
                       (layer/file-diagnostics db path (:clj-depend opts))))
+            (keep #(apply-level (:levels opts) %))
             (map #(assoc % :file path))
             (reduce (fn [m d]
                       (assoc m [(:row d) (:col d) (:code d)] d))

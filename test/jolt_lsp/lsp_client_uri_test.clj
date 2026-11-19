@@ -69,11 +69,42 @@
       (is (seq locs))
       (is (= #{link-uri} (set (map :uri locs)))))))
 
-(deftest a-file-the-client-never-opened-keeps-its-canonical-uri
+(deftest a-file-the-client-never-opened-is-named-under-the-clients-root
+  (let [{:keys [real link]} (project)]
+    (testing "a root reached through a link names unopened files through it"
+      (let [[saved] (run (paths/file-uri link)
+                         [(save (paths/file-uri (str link "/src/demo/core.clj")))])]
+        (is (= [(paths/file-uri (str link "/src/demo/core.clj"))] saved))))
+    (testing "a canonical root keeps canonical URIs"
+      (let [[saved] (run (paths/file-uri real)
+                         [(save (paths/file-uri (str real "/src/demo/core.clj")))])]
+        (is (= [(paths/file-uri (str real "/src/demo/core.clj"))] saved))))))
+
+(deftest navigation-into-an-unopened-file-uses-the-clients-root
   (let [{:keys [real link]} (project)
-        [saved] (run (paths/file-uri link)
-                     [(save (paths/file-uri (str link "/src/demo/core.clj")))])]
-    (is (= [(paths/file-uri (str real "/src/demo/core.clj"))] saved))))
+        other (str real "/src/demo/util.clj")
+        _ (spit other "(ns demo.util)\n(defn sum-prices [xs] (reduce + xs))\n")
+        _ (spit (str real "/src/demo/core.clj")
+                "(ns demo.core (:require [demo.util :refer [sum-prices]]))\n(defn total [items] (sum-prices items))\n")
+        link-uri (paths/file-uri (str link "/src/demo/core.clj"))
+        sent (atom [])]
+    (run (paths/file-uri link) [])
+    (with-redefs [rpc/write-message #(swap! sent conj %)]
+      (@#'lsp/handle (req 2 "textDocument/definition"
+                          {:textDocument {:uri link-uri} :position {:line 1 :character 22}})))
+    (is (= [(paths/file-uri (str link "/src/demo/util.clj"))]
+           (mapv :uri (:result (first @sent)))))))
+
+(deftest uris-are-percent-encoded
+  (testing "a path with a space or a non-ASCII name round trips"
+    (doseq [p ["/tmp/my project/src/a.clj" "/tmp/café/a.clj" "/tmp/a+b/c#d.clj"]]
+      (is (= p (paths/uri->path (paths/file-uri p))))))
+  (testing "the URI itself is encoded as clients send it"
+    (is (= "file:///tmp/my%20project/a.clj" (paths/file-uri "/tmp/my project/a.clj")))
+    (is (= "file:///tmp/caf%C3%A9/a.clj" (paths/file-uri "/tmp/café/a.clj"))))
+  (testing "a client's encoded URI decodes"
+    (is (= "/tmp/a b/x.clj" (paths/uri->path "file:///tmp/a%20b/x.clj")))
+    (is (= "/tmp/a+b/x.clj" (paths/uri->path "file:///tmp/a+b/x.clj")))))
 
 (deftest one-file-open-under-two-uris-gets-a-push-for-each
   (let [{:keys [real link]} (project)
@@ -91,6 +122,7 @@
 (deftest closing-the-last-uri-forgets-it
   (let [{:keys [real link]} (project)
         link-uri (paths/file-uri (str link "/src/demo/core.clj"))
-        [_ _ saved] (run (paths/file-uri link) [(open link-uri) (close link-uri) (save link-uri)])]
+        ;; rooted at the real path, so after the close nothing maps it to the link
+        [_ _ saved] (run (paths/file-uri real) [(open link-uri) (close link-uri) (save link-uri)])]
     (is (= [(paths/file-uri (str real "/src/demo/core.clj"))] saved))
     (is (empty? (:uris @lsp/state)))))
