@@ -179,14 +179,18 @@
 
 (deftest lsp-reader-skips-malformed-frames
   (let [good "Content-Length: 2\r\n\r\n{}"]
-    (testing "missing, non-numeric and negative Content-Length"
-      (is (= [{} nil] (read-frames (str "X-Other: 1\r\n\r\n" good) 2)))
-      (is (= [{} nil] (read-frames (str "Content-Length: abc\r\n\r\n" good) 2)))
-      (is (= [{} nil] (read-frames (str "Content-Length: -5\r\n\r\n" good) 2))))
-    (testing "a body that is not JSON"
-      (is (= [{} nil] (read-frames (str "Content-Length: 5\r\n\r\n{oops" good) 2))))
-    (testing "only bad input ends in nil"
-      (is (= [nil] (read-frames "Content-Length: abc\r\n\r\n" 1))))))
+    (testing "a missing, non-numeric or negative Content-Length loses the
+              framing, so reading stops at that frame's blank line instead of
+              reading the bodies after it as headers"
+      (doseq [header ["X-Other: 1" "Content-Length: abc" "Content-Length: -5"]]
+        (let [rest-of-input (str "{\"id\":1}" good)
+              in (java.io.ByteArrayInputStream.
+                  (.getBytes (str header "\r\n\r\n" rest-of-input) "UTF-8"))]
+          (binding [rpc/*in-stream* in]
+            (is (nil? (rpc/read-message)) header)
+            (is (= (count rest-of-input) (.available in)) header)))))
+    (testing "a body that is not JSON is skipped, since the framing still holds"
+      (is (= [{} nil] (read-frames (str "Content-Length: 5\r\n\r\n{oops" good) 2))))))
 
 (deftest lsp-reader-survives-short-reads
   ;; a stream that hands out at most 3 bytes per bulk read, as a pipe may
