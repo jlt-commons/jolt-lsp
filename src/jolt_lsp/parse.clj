@@ -223,18 +223,17 @@
             node)))))
 
 (defn- read-coll* [^Cursor c tag open-len s start row col closer]
-  (do
-    (dotimes [_ open-len] (advance! c))
-    (loop [acc []]
-      (if-let [w (read-ws c)]
-        (recur (if (identical? w ::blank) acc (conj acc w)))
-        (let [ch (peek-at c 0)]
-          (cond
-            (nil? ch) (fail c (str "EOF while reading, starting at line " row))
-            (= ch closer) (do (advance! c)
-                              (mk tag nil s start (ci c) row col (crow c) (ccol c) acc))
-            (#{\) \] \}} ch) (fail c (str "Unmatched delimiter: " ch ", expected: " closer))
-            :else (recur (conj acc (read-form c)))))))))
+  (dotimes [_ open-len] (advance! c))
+  (loop [acc []]
+    (if-let [w (read-ws c)]
+      (recur (if (identical? w ::blank) acc (conj acc w)))
+      (let [ch (peek-at c 0)]
+        (cond
+          (nil? ch) (fail c (str "EOF while reading, starting at line " row))
+          (= ch closer) (do (advance! c)
+                            (mk tag nil s start (ci c) row col (crow c) (ccol c) acc))
+          (#{\) \] \}} ch) (fail c (str "Unmatched delimiter: " ch ", expected: " closer))
+          :else (recur (conj acc (read-form c))))))))
 
 (defn- read-string-node [^Cursor c tag start row col]
   (let [s (.-s c)

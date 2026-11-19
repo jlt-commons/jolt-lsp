@@ -163,6 +163,7 @@
     (for [l locals
           :when (and (not (contains? used (:id l)))
                      (not (quiet-local-kinds (:kind l)))
+                     (not (:generated l))
                      (not (string/starts-with? (:name l) "_")))]
       (diag (row-range l) :warning :unused-binding
             (str "Unused binding: " (:name l))))))

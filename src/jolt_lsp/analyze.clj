@@ -12,6 +12,7 @@
     :inactive inside a reader-conditional branch Jolt does not read"
   (:require [clojure.string :as string]
             [jolt-lsp.arity :as arity]
+            [jolt-lsp.hooks :as hooks]
             [jolt-lsp.read-impl :as read]
             [jolt-lsp.tree :as tree]))
 
@@ -54,6 +55,11 @@
   "{\"ns/macro\" \"defn\"}: analyze calls to a macro as the built-in form
   named (kondo's :lint-as). Bound by the indexer from the project config."
   {})
+
+(def ^:dynamic *hooks*
+  "clj-kondo hooks config (see jolt-lsp.hooks), or nil. Bound by the
+  indexer from the project config."
+  nil)
 
 (def active-features
   "Reader-conditional features Jolt reads, in the order it prefers them."
@@ -110,6 +116,7 @@
               :scope-range scope-range
               :keys-destructuring keys-destructuring?
               :destructured destructured?
+              :generated (boolean (:generated node))
               :text (tree/text node)})
       id)))
 
@@ -130,7 +137,7 @@
   Nothing is reported inside a syntax-quote or an inactive branch: that
   text is not code Jolt runs as written."
   [ctx st node code severity message]
-  (when-not (or (:syntax-quote ctx) (:inactive ctx))
+  (when-not (or (:syntax-quote ctx) (:inactive ctx) (:generated node))
     (swap! (:findings st) conj
            {:range (tree/node-range node)
             :code code
@@ -174,6 +181,7 @@
                   :interop (interop-name? nm prefix qualified?)
                   :quoted (boolean (:syntax-quote ctx))
                   :var-quoted (boolean (:var-quote ctx))
+                  :generated (boolean (:generated node))
                   :in-comment (boolean (:in-comment ctx))
                   :inactive (boolean (:inactive ctx))
                   :heads (:heads ctx)
@@ -1065,8 +1073,21 @@
               raw)
         ;; record the head as an occurrence for special handlers too, so
         ;; core macros count as used and navigate
-        head! #(add-occ! ctx st (first (tree/children node)) true)]
+        head! #(add-occ! ctx st (first (tree/children node)) true)
+        hook (when (and free? *hooks*)
+               (let [f (head-fqn ctx raw)]
+                 (when (and (hooks/hook-for *hooks* f) (not (contains? (:visited ctx) f)))
+                   f)))
+        expanded (when hook (hooks/expand *hooks* hook node ctx))]
+    (when expanded
+      (swap! (:findings st) into (:findings expanded)))
     (cond
+      ;; a clj-kondo hook rewrote the call: walk what it returned, with the
+      ;; written head kept as a reference
+      (:node expanded)
+      (do (head!)
+          (walk-node (:node expanded) (update ctx :visited (fnil conj #{}) hook) st))
+
       ;; rich comments: references count, definitions do not
       (= h "comment") (do (head!) (handle-comment node ctx st))
       (= h "quote") (when-let [n (second (tree/children node))]

@@ -58,16 +58,17 @@
 (def ^:dynamic *lint* "The project's lint config, see settings/lint-config." {})
 
 (defn- analyze-source [path source external]
-  (binding [analyze/*lint-as* (:lint-as *lint*)]
+  (binding [analyze/*lint-as* (:lint-as *lint*)
+            analyze/*hooks* (when-not external (:hooks *lint*))]
     (cond
       (= :edn (paths/dialect path)) (analyze/analyze-edn source path)
       external (analyze/analyze-shallow source path)
       :else (analyze/analyze source path))))
 
 (defn- content-hash
-  "Analyses depend on the text and on :lint-as."
+  "Analyses depend on the text, :lint-as and the hooks."
   [source]
-  (hash [source (:lint-as *lint*)]))
+  (hash [source (:lint-as *lint*) (:stamp (:hooks *lint*))]))
 
 (defn- analysis-entry-text [path source external]
   {:path path
@@ -270,6 +271,8 @@
                                  ;; resolve when Jolt loads the file
                                  unresolved (or (= :unresolved (:kind r)) (forward? occ r))]
                              (cond-> (assoc occ :fqn (:fqn r) :unresolved unresolved)
+                               ;; a hook made it: not written code, so not checked
+                               (:generated occ) (assoc :quoted true)
                                ;; :skip-args: calls under these macros are not checked
                                (and (:arity occ) (seq skip-arity)
                                     (some #(contains? skip-arity (head-fqn %)) (:heads occ)))
@@ -351,6 +354,7 @@
                        :name (:name l)
                        :kind (:kind l)
                        :keys-destructuring (boolean (:keys-destructuring l))
+                       :generated (boolean (:generated l))
                        :destructured (boolean (:destructured l))}
                       (r4 "" r)
                       (r4 "scope-" s))))
@@ -485,7 +489,7 @@
 (defmacro ^:private with-lint
   "Run body with the project's lint config bound."
   [root & body]
-  `(binding [*lint* (settings/lint-config ~root)] ~@body))
+  `(binding [*lint* (settings/lint-config ~root {:deps? true})] ~@body))
 
 (defn build
   "Index every source file under root from scratch. Returns the index."

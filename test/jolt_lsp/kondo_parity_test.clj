@@ -277,3 +277,88 @@
   (let [root (project {"src/g/gll.clj" "(ns g.gll)\n(defmacro profile [& body] `(do ~@body))\n"
                        "src/g/r.clj" "(ns g.r (:require [g.gll :as gll #?@(:clj [:refer [profile]])]))\n(profile 1)\n"})]
     (is (empty? (filter #(= :unresolved-symbol (first %)) (diags root "src/g/r.clj"))))))
+
+;; ---------------------------------------------------------------------------
+;; round 5: clj-kondo hooks
+
+(def ^:private hook-src
+  (str "(ns hooks.lib (:require [clj-kondo.hooks-api :as api] [hooks.util :as u]))\n"
+       "(defn defthing [{:keys [node]}]\n"
+       "  (let [[_ nm & body] (:children node)]\n"
+       "    (when-not nm (api/reg-finding! (assoc (meta node) :message \"defthing needs a name\" :type :defthing)))\n"
+       "    {:node (with-meta (api/list-node (list* (api/token-node 'def) nm body)) (meta node))}))\n"
+       "(defn with-x [{:keys [node]}]\n"
+       "  (let [[_ bindings & body] (:children node)]\n"
+       "    {:node (u/let-node bindings body)}))\n"
+       "(defn boom [_] (throw (ex-info \"kaboom\" {})))\n"
+       "(defmacro unless [c & body] `(if ~c nil (do ~@body)))\n"))
+
+(def ^:private hook-util
+  (str "(ns hooks.util (:require [clj-kondo.hooks-api :as api]))\n"
+       "(defn let-node [bindings body]\n"
+       "  (api/list-node (list* (api/token-node 'let) bindings body)))\n"))
+
+(def ^:private lib-src
+  (str "(ns my.lib)\n"
+       "(defmacro defthing [nm & body] `(def ~nm ~@body))\n"
+       "(defmacro with-x [b & body] `(let ~b ~@body))\n"
+       "(defmacro boom [& body] nil)\n"
+       "(defmacro unless [c & body] `(if ~c nil (do ~@body)))\n"))
+
+(def ^:private hook-config
+  (str "{:hooks {:analyze-call {my.lib/defthing hooks.lib/defthing"
+       "                         my.lib/with-x hooks.lib/with-x"
+       "                         my.lib/boom hooks.lib/boom}"
+       "         :macroexpand {my.lib/unless hooks.lib/unless}}}"))
+
+(defn- hook-project [body & [extra]]
+  (project (merge {"src/my/lib.clj" lib-src
+                   "src/app/core.clj" (str "(ns app.core (:require [my.lib :refer [defthing with-x boom unless]]))\n" body)
+                   ".clj-kondo/config.edn" hook-config
+                   ".clj-kondo/hooks/lib.clj" hook-src
+                   ".clj-kondo/hooks/util.clj" hook-util}
+                  extra)))
+
+(deftest analyze-call-hook-defines-a-var
+  (let [root (hook-project "(defthing foo 1)\n(defn use-it [] (inc foo))\n")
+        d (db/build root)]
+    (is (empty? (remove #(= :unused-referred-var (first %)) (diags d root "src/app/core.clj"))))
+    (is (some? (db/var-by-fqn d "app.core/foo")))
+    (is (= 2 (count (query/references d "app.core/foo"))))))
+
+(deftest analyze-call-hook-binds-locals-through-a-helper-ns
+  (let [root (hook-project "(defn f [] (with-x [a 1] (inc a)))\n(defn g [] (with-x [b 1] (inc nope)))\n")
+        ds (diags root "src/app/core.clj")]
+    (is (has? ds :unresolved-symbol "Unresolved symbol: nope"))
+    (is (has? ds :unused-binding "Unused binding: b"))
+    (is (not (has? ds :unresolved-symbol "Unresolved symbol: a")))))
+
+(deftest hook-findings-and-failures
+  (let [ds (diags (hook-project "(defthing)\n(boom 1)\n") "src/app/core.clj")]
+    (is (has? ds :defthing "defthing needs a name"))
+    (is (has? ds :hook "kaboom"))))
+
+(deftest macroexpand-hook-keeps-locations
+  (let [root (hook-project "(defn f [x] (unless x (undefined-thing)))\n")
+        d (db/build root)
+        ds (remove #(= :unused-referred-var (:code %))
+                   (diagnostics/file-diagnostics d (str root "/src/app/core.clj")))]
+    (is (= [[:unresolved-symbol 2]] (mapv (juxt :code :row) ds)))
+    (is (= 24 (:col (first ds))))))
+
+(deftest hooks-from-imported-configs
+  (let [root (project {"src/my/lib.clj" lib-src
+                       "src/app/core.clj" "(ns app.core (:require [my.lib :refer [defthing]]))\n(defthing foo 1)\n(inc foo)\n"
+                       ".clj-kondo/imports/my/lib/config.edn" "{:hooks {:analyze-call {my.lib/defthing hooks.lib/defthing}}}"
+                       ".clj-kondo/imports/my/lib/hooks/lib.clj" hook-src
+                       ".clj-kondo/imports/my/lib/hooks/util.clj" hook-util})]
+    (is (empty? (diags root "src/app/core.clj")))))
+
+(deftest hooks-can-be-turned-off
+  (let [root (hook-project "(defthing)\n" {".jolt-lsp/config.edn" "{:hooks false}"})]
+    (is (not (has? (diags root "src/app/core.clj") :defthing "needs a name")))))
+
+(deftest hook-output-text-reads-back
+  (let [root (hook-project "(with-x [a 1 b 2] (+ a b))\n")
+        d (db/build root)]
+    (is (empty? (remove #(= :unused-referred-var (first %)) (diags d root "src/app/core.clj"))))))

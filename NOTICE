@@ -48,4 +48,6 @@ Parts of the linting follow clj-kondo (https://github.com/clj-kondo/clj-kondo),
 Copyright (c) Michiel Borkent, licensed under the Eclipse Public License
 1.0, which allows distribution under later versions of the license. Files
 with adapted code carry a header naming clj-kondo and the functions taken:
-src/jolt_lsp/arity.clj.
+src/jolt_lsp/arity.clj, src/jolt_lsp/hooks.clj and src/clj_kondo/hooks_api.clj
+(the hooks API clj-kondo hooks are written against, re-implemented over
+jolt-lsp's walk).
