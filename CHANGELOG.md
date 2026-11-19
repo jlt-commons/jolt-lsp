@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The `lsp` server answered nothing until more input arrived, because on Jolt
+  a character read of `*in*` waits for a whole line or EOF and an LSP body has
+  no newline (https://github.com/burinc/jolt/issues/22). Frames are now read
+  as bytes from `System/in`: header lines up to the blank line, then exactly
+  Content-Length bytes decoded as UTF-8. MCP mode reads whole lines and is
+  unchanged.
 - `jolt.ffi/defcfn` defines a var, so calls to a function declared with it
   (`(ffi/defcfn ^:private unsetenv* "unsetenv" [:string] :int)`, under any
   alias or referred) are no longer reported as unresolved, and go-to-definition
