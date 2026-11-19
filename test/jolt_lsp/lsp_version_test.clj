@@ -19,7 +19,8 @@
     (spit (str root "/deps.edn") "{:paths [\"src\"]}")
     (spit path "(ns a)\n")
     (api/ensure-db root)
-    (reset! lsp/state {:docs {} :versions {}})
+    ;; an initialized server, as after the initialize handshake
+    (reset! lsp/state {:docs {} :versions {} :initialized? true})
     (let [pushed (atom [])]
       (with-redefs [rpc/notify (fn [method params]
                                  (when (= "textDocument/publishDiagnostics" method)
