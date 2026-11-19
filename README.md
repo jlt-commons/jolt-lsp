@@ -147,6 +147,26 @@ A custom linter is a Clojure namespace loaded once; its function takes
 `{:db :file :ns :var-defs :var-refs :local-defs :local-refs}` and returns
 diagnostic maps.
 
+## Releases
+
+Projects that use jolt-lsp as a library pin a tag and its commit, so a merge
+to `main` doesn't move them:
+
+```clojure
+{:deps {io.github.jlt-commons/jolt-lsp
+        {:git/url "https://github.com/jlt-commons/jolt-lsp"
+         :git/tag "v0.3.2" :git/sha "272aa45"}}}
+```
+
+CI runs the tests and specs on every pull request and every push to `main`,
+then builds and smoke-tests the macOS and Linux binaries and keeps them as
+workflow artifacts. Nothing is published until a release is cut, either by
+pushing a `v*` tag or by running the `ci` workflow on `main` from the Actions
+tab with a version such as `v0.4.0`, which tags that commit. The release gets
+the binaries once the tests and the smoke test pass. The `JOLT_PIN`
+repository variable pins the jolt version CI builds with, and the latest
+jolt release is used when it's unset.
+
 ## License
 
 Eclipse Public License 2.0, as across jlt-commons, with GPL-2.0-or-later

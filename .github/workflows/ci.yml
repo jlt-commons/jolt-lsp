@@ -1,0 +1,228 @@
+name: ci
+
+# Every push to main and every pull request runs the tests and specs, then
+# builds and smoke-tests the binaries and keeps them as workflow artifacts.
+# Merging to main releases nothing: projects that depend on jolt-lsp pin a
+# :git/tag and :git/sha, so they stay on their version until they move.
+#
+# A release happens only when a v* tag is pushed, or when "Run workflow" on
+# main is given a version, which tags that commit. Either way it waits for
+# the tests and the smoke test.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, like v0.4.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  # Latest jolt by default; the JOLT_PIN repository variable pins one. Resolved
+  # once, so the tests and the binaries use the same compiler.
+  jolt-version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOLT_PIN: ${{ vars.JOLT_PIN }}
+        run: |
+          if [ -n "$JOLT_PIN" ]; then
+            ver="$JOLT_PIN"
+          else
+            ver=$(gh api repos/jolt-lang/jolt/releases/latest --jq .tag_name)
+            [ -n "$ver" ] && [ "$ver" != "null" ] || { echo "could not resolve latest jolt"; exit 1; }
+          fi
+          echo "jolt: $ver"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: jolt-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux
+          - os: macos-latest
+            target: aarch64-macos
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      JOLT_VERSION: ${{ needs.jolt-version.outputs.version }}
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.ci-deps/gitlibs
+      JOLT_MAVEN_REPOSITORY: ${{ github.workspace }}/.ci-deps/m2
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install jolt
+        run: ci/install-jolt.sh "${JOLT_VERSION}" "${{ matrix.target }}"
+
+      - name: Cache deps
+        uses: actions/cache@v6
+        with:
+          path: .ci-deps
+          key: deps-${{ matrix.target }}-${{ hashFiles('deps.edn') }}
+          restore-keys: deps-${{ matrix.target }}-
+
+      - name: Test
+        run: jolt -M:test
+
+      - name: Specs
+        run: jolt -M:spec
+
+  # a standalone binary per platform, built and smoke-tested on every run so a
+  # broken build shows up before a release, not in one
+  build:
+    needs: [jolt-version, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-macos
+          # 22.04's glibc, so the binary runs there and on anything newer
+          - os: ubuntu-22.04
+            target: x86_64-linux
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      JOLT_VERSION: ${{ needs.jolt-version.outputs.version }}
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.ci-deps/gitlibs
+      JOLT_MAVEN_REPOSITORY: ${{ github.workspace }}/.ci-deps/m2
+      # the input for a manual run, the tag's name for a tag push
+      VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install jolt
+        run: ci/install-jolt.sh "${JOLT_VERSION}" "${{ matrix.target }}"
+
+      - name: Cache deps
+        uses: actions/cache@v6
+        with:
+          path: .ci-deps
+          key: deps-${{ matrix.target }}-${{ hashFiles('deps.edn') }}
+          restore-keys: deps-${{ matrix.target }}-
+
+      - name: Build binary
+        run: jolt build -m jolt-lsp.main -o target/jolt-lsp
+
+      # a release's archive carries its version; any other run's gets the bare name
+      - name: Package
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] || [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            name="jolt-lsp-${VERSION}-${{ matrix.target }}"
+          else
+            name="jolt-lsp-${{ matrix.target }}"
+          fi
+          mkdir -p "$name"
+          cp target/jolt-lsp README.md CHANGELOG.md LICENSE "$name/"
+          echo "PKG_DIR=$name" >> "$GITHUB_ENV"
+
+      # Run the packaged binary with the build's dependency checkouts
+      # hidden, so it can't lean on files a user's machine won't have.
+      - name: Smoke test
+        run: |
+          hidden=""
+          for d in "$(pwd)/.ci-deps" "$HOME/.jolt/gitlibs" "$HOME/.jolt/mvnlibs" "$HOME/.m2"; do
+            if [ -d "$d" ]; then mv "$d" "$d.hidden"; hidden="$hidden $d"; fi
+          done
+          status=0
+          ci/smoke.sh "$PKG_DIR/jolt-lsp" || status=$?
+          for d in $hidden; do mv "$d.hidden" "$d"; done
+          exit $status
+
+      - name: Archive
+        run: |
+          tar czf "${PKG_DIR}.tar.gz" "$PKG_DIR"
+          shasum -a 256 "${PKG_DIR}.tar.gz" > "${PKG_DIR}.tar.gz.sha256"
+          echo "PKG=${PKG_DIR}.tar.gz" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: binary-${{ matrix.target }}
+          path: |
+            ${{ env.PKG }}
+            ${{ env.PKG }}.sha256
+          if-no-files-found: error
+
+  release:
+    needs: [test, build]
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # the input for a manual run, the tag's name for a tag push
+      VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check the version and where it points
+        run: |
+          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must look like v1.2.3, got '$VERSION'"
+            exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            if [ "$GITHUB_REF" != refs/heads/main ]; then
+              echo "::error::run the release from main, not $GITHUB_REF"
+              exit 1
+            fi
+            if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+              echo "::error::tag $VERSION already exists"
+              exit 1
+            fi
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_SHA is not on main"
+            exit 1
+          fi
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "::error::release $VERSION already exists"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: binary-*
+          path: binaries
+          merge-multiple: true
+
+      # --target tags the commit when the tag doesn't exist yet (a manual run)
+      - name: Release
+        run: |
+          cat > notes.md <<'NOTES'
+          Standalone jolt-lsp binaries for macOS (arm64) and Linux (x86_64): a language server (`jolt-lsp lsp`), an MCP server for coding agents (`jolt-lsp mcp`) and a JSON CLI.
+
+          Register the MCP server, for example:
+
+          `claude mcp add --scope user jolt-lsp -- /path/to/jolt-lsp mcp`
+
+          See CHANGELOG.md for what changed and docs in the repository for the tools.
+
+          The macOS binary is unsigned. Clear the quarantine flag before the first run: `xattr -d com.apple.quarantine jolt-lsp`.
+          NOTES
+          gh release create "$VERSION" \
+            --target "$GITHUB_SHA" \
+            --title "jolt-lsp $VERSION" \
+            --notes-file notes.md \
+            binaries/*
