@@ -126,18 +126,28 @@
                    (assoc seen (:fqn v) v)))
                {})))
 
+(defn- ctor-fqn
+  "For a resolved ->Rec or map->Rec, the record or type's fqn, else nil."
+  [all-vars fqn]
+  (when-let [i (some-> fqn (string/index-of "/"))]
+    (let [nsn (subs fqn 0 i)
+          nm (subs fqn (inc i))
+          base (cond (string/starts-with? nm "map->") (subs nm 5)
+                     (string/starts-with? nm "->") (subs nm 2)
+                     :else nil)
+          v (when (seq base) (get all-vars (str nsn "/" base)))]
+      (when (#{:defrecord :deftype} (:kind v))
+        (:fqn v)))))
+
 (defn- resolve-occurrence [analysis all-vars ns text]
-  (let [ctor-base (cond
-                    (string/starts-with? text "map->") (subs text 5)
-                    (string/starts-with? text "->") (subs text 2)
-                    :else nil)
-        ctor-fqn (when ctor-base
-                   (when-let [v (get all-vars (if ns (str ns "/" ctor-base) ctor-base))]
-                     (when (#{:defrecord :deftype} (:kind v))
-                       (:fqn v))))]
-    (if ctor-fqn
-      {:kind :var :fqn ctor-fqn}
-      (resolve/resolve-name analysis ns text))))
+  (let [unq-ctor (when (and ns (not (string/index-of text "/")))
+                   (ctor-fqn all-vars (str ns "/" text)))
+        r (when-not unq-ctor (resolve/resolve-name analysis ns text))]
+    (cond
+      unq-ctor {:kind :var :fqn unq-ctor}
+      (and (:fqn r) (not (contains? all-vars (:fqn r))) (ctor-fqn all-vars (:fqn r)))
+      {:kind :var :fqn (ctor-fqn all-vars (:fqn r))}
+      :else r)))
 
 (defn- ns-analysis [a vars-by-ns]
   (let [refer-all (get-in a [:ns-meta :refer-all])]
@@ -193,6 +203,8 @@
        :unresolved (boolean (:unresolved occ))
        :interop (boolean (:interop occ))
        :quoted (boolean (:quoted occ))
+       :var-quoted (boolean (:var-quoted occ))
+       :dsl (boolean (:dsl occ))
        :inactive (boolean (:inactive occ))
        :refer (boolean (:refer occ))}
       (r4 "" (:range occ))
@@ -220,7 +232,7 @@
                               v (get all-vars (:fqn r))]
                           (and (= :var (:kind r))
                                (or (nil? v) (= :defmacro (:kind v)))))))
-        {:keys [exclude-symbols exclude-calls exclude-namespaces skip-arity]} *lint*
+        {:keys [exclude-symbols exclude-calls exclude-namespaces skip-arity dsl-heads]} *lint*
         head-fqn (memoize (fn [h] (:fqn (resolve-occurrence a-res all-vars ns h))))
         excluded? (fn [occ]
                     (or (contains? exclude-symbols (:text occ))
@@ -231,20 +243,46 @@
                                     (let [names (get exclude-calls f)]
                                       (or (nil? names) (contains? names (:text occ)))))))
                               (:heads occ))))
+        ;; where this file first defines (or declares) each of its names
+        own-defs (reduce (fn [m v]
+                           (let [p [(nth (:range v) 0) (nth (:range v) 1)]]
+                             (if (and (= ns (:ns v)) (neg? (compare p (get m (:name v) [Long/MAX_VALUE 0]))))
+                               (assoc m (:name v) p)
+                               m)))
+                         {} (:vars a))
+        refers (get-in a [:ns-meta :refers])
+        ;; :refer :all from a namespace the index has no vars for: any
+        ;; bare name may come from it, so none is reported unresolved
+        blind-refer-all? (some #(and (empty? (get vars-by-ns %))
+                                     (not (contains? resolve/core-namespaces %)))
+                               (get-in a [:ns-meta :refer-all]))
+        forward? (fn [occ r]
+                   (and (not (:qualified occ))
+                        (not (:in-comment occ))
+                        (not (contains? refers (:text occ)))
+                        (= (:fqn r) (str ns "/" (:text occ)))
+                        (when-let [p (get own-defs (:text occ))]
+                          (neg? (compare [(nth (:range occ) 0) (nth (:range occ) 1)] p)))))
         resolved (when-not external?
                    (mapv (fn [occ]
                            (let [r (resolve-occurrence a-res all-vars ns (:text occ))
-                                 unresolved (= :unresolved (:kind r))]
+                                 ;; a name used above its definition does not
+                                 ;; resolve when Jolt loads the file
+                                 unresolved (or (= :unresolved (:kind r)) (forward? occ r))]
                              (cond-> (assoc occ :fqn (:fqn r) :unresolved unresolved)
                                ;; :skip-args: calls under these macros are not checked
                                (and (:arity occ) (seq skip-arity)
                                     (some #(contains? skip-arity (head-fqn %)) (:heads occ)))
                                (assoc :arity nil)
+                               (and (seq dsl-heads)
+                                    (some #(contains? dsl-heads (head-fqn %)) (:heads occ)))
+                               (assoc :arity nil :dsl true)
                                ;; inside a macro (or a call the index cannot
                                ;; see): its arguments may be data, not code;
                                ;; or the config excludes it, as kondo's does
                                (and unresolved (or (some opaque-head? (:heads occ))
-                                                   (excluded? occ)))
+                                                   (excluded? occ)
+                                                   (and blind-refer-all? (not (:qualified occ)))))
                                (assoc :quoted true))))
                          (:occurrences a)))
         meta (:ns-meta a)]
@@ -262,6 +300,7 @@
                    :external external?
                    :mtime (or (:mtime a) 0)
                    :hash (str (:hash a))
+                   :open-ns (boolean (:open-ns a))
                    :parse-error (when-not (:parse-ok a) (str (:parse-error a)))})
           (update :namespace conj {:id file-id :file-id file-id :name ns})
           (update :ns-alias into
@@ -625,6 +664,11 @@
 (defn keyword-defs-in-file [db file-id] (in-file db :keyword-def file-id))
 (defn findings-in-file [db file-id] (in-file db :finding file-id))
 (defn keyword-refs-in-file [db file-id] (in-file db :keyword-ref file-id))
+
+(defn ns-files
+  "Every indexed file (project or dependency) of ns."
+  [db ns]
+  (multi db :file/by-ns ns))
 
 (defn file-by-ns
   "The project file defining ns, preferring a project file over a

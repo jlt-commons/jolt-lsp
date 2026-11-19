@@ -62,6 +62,43 @@
     (diag (row-range r) :error :invalid-arity
           (arity/arity-message info (:fqn r) n))))
 
+(defn- fqn-ns [fqn]
+  (when-let [i (string/index-of fqn "/")] (subs fqn 0 i)))
+
+(defn unresolved-var
+  "Qualified names into a namespace that is known (indexed, or a loaded
+  core namespace) but has no such var. A namespace with a def-like macro
+  the walk cannot see into is left alone: the var may be made there.
+  `ns-state` answers :closed, :open or nil (unknown) for a namespace."
+  [refs var-of ns-state]
+  (for [r refs
+        :let [fqn (:fqn r)]
+        :when (and (:qualified r) fqn (not (:unresolved r)) (checked-ref? r)
+                   (nil? (var-facts var-of fqn))
+                   (= :closed (ns-state (fqn-ns fqn))))]
+    (diag (row-range r) :warning :unresolved-var
+          (str "Unresolved var: " (:text r)))))
+
+(defn private-call
+  "Uses of another namespace's private var, other than through #' or a
+  syntax-quote."
+  [refs var-of]
+  (for [r refs
+        :let [v (some-> (:fqn r) var-of)]
+        :when (and v (:private v) (checked-ref? r) (not (:var-quoted r)) (not (:dsl r))
+                   (not= (:ns v) (:ns r)))]
+    (diag (row-range r) :error :private-call
+          (str "#'" (:fqn r) " is private"))))
+
+(defn deprecated-var
+  "Uses of a deprecated var, outside its own definition."
+  [refs var-of]
+  (for [r refs
+        :let [v (some->> (:fqn r) (var-facts var-of))]
+        :when (and v (:deprecated v) (checked-ref? r) (not= (:caller r) (:fqn r)))]
+    (diag (row-range r) :warning :deprecated-var
+          (str "#'" (:fqn r) " is deprecated"))))
+
 (defn walk-findings
   "Findings the analysis walk decided (local calls, recur, overloads)."
   [findings]
@@ -151,6 +188,17 @@
                     (or (syntax/explain d) "the file does not read"))
               :problem (:reason d))])))
 
+(defn- ns-state
+  "For a namespace name: :closed when every var it has is indexed, :open
+  when a file of it defines vars the walk cannot see, nil when unknown."
+  [db]
+  (fn [nsn]
+    (let [files (db/ns-files db nsn)]
+      (cond
+        (seq files) (if (some :open-ns files) :open :closed)
+        (core-info/loaded-ns? nsn) :closed
+        :else nil))))
+
 (defn apply-level
   "A built-in finding at the level the config gives its code (kondo's
   `{:linters {:code {:level ...}}}`), or nil when the level is :off."
@@ -175,12 +223,16 @@
            requires (db/file-requires db path)
            refers (db/file-refers db path)
            u (usage refs kw-refs)
+           var-of #(db/var-by-fqn db %)
            source (when (:parse-error file)
                     (or (:source opts) (try (slurp path) (catch Throwable _ ""))))]
        (->> (concat (when source (syntax-errors source))
                     (unresolved-namespace refs)
                     (unresolved-symbol refs)
-                    (invalid-arity refs #(db/var-by-fqn db %))
+                    (invalid-arity refs var-of)
+                    (unresolved-var refs var-of (ns-state db))
+                    (private-call refs var-of)
+                    (deprecated-var refs var-of)
                     (walk-findings (db/findings-in-file db fid))
                     (unused-namespaces requires refers u)
                     (unused-refers (filter :refer refs) u)

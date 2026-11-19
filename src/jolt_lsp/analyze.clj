@@ -69,6 +69,7 @@
    :locals (atom [])
    :local-refs (atom [])
    :findings (atom [])
+   :open (atom false)
    :local-seq (atom 0)})
 
 (defn- sym-text [node]
@@ -94,7 +95,7 @@
       (and qualified? (class-like? prefix))
       (and (not qualified?) (class-like? nm))))
 
-(declare head-fqn walk-node walk-list expand-libspec walk-quoted analyze*)
+(declare head-fqn walk-node walk-list expand-libspec walk-quoted analyze* clause-items)
 
 (defn- add-local!
   [st node kind scope-range keys-destructuring? destructured? & [nm]]
@@ -172,6 +173,8 @@
                   :ns (:ns ctx)
                   :interop (interop-name? nm prefix qualified?)
                   :quoted (boolean (:syntax-quote ctx))
+                  :var-quoted (boolean (:var-quote ctx))
+                  :in-comment (boolean (:in-comment ctx))
                   :inactive (boolean (:inactive ctx))
                   :heads (:heads ctx)
                   :arity arity
@@ -272,7 +275,7 @@
   "Split what follows a fn name into its single params vector and body, or
   its arities. Return-type metadata on the params (^String [x]) is allowed."
   [nodes]
-  (let [nodes (vec nodes)
+  (let [nodes (vec (clause-items nodes))
         idx (first (keep-indexed (fn [i n] (when (= :vector (tree/tag (tree/meta-form n))) i))
                                  nodes))]
     (if idx
@@ -281,7 +284,7 @@
       {:arities (filterv #(= :list (tree/tag %)) nodes)})))
 
 (defn- arity-parts [arity]
-  (let [cs (tree/children arity)
+  (let [cs (clause-items (tree/children arity))
         p (first cs)]
     (if (and p (= :vector (tree/tag (tree/meta-form p))))
       {:params (tree/meta-form p) :body (rest cs)}
@@ -592,7 +595,7 @@
         "defprotocol"
         (doseq [m (filter #(= :list (tree/tag %)) after-name)]
           (let [mcs (tree/children m)
-                mname (first mcs)
+                mname (some-> (first mcs) tree/meta-form)
                 mnm (sym-text mname)
                 vecs (filter #(= :vector (tree/tag %)) (rest mcs))
                 mdoc (some #(when (tree/string-node? %) (tree/sexpr %)) (rest mcs))]
@@ -621,7 +624,7 @@
               (tree/symbol-node? n) (add-occ! ctx' st n false))))
 
         "declare"
-        (doseq [n (rest cs)]
+        (doseq [n (map tree/meta-form (rest cs))]
           (when (tree/symbol-node? n)
             (let [nm2 (sym-text n)]
               (add-var! ctx st
@@ -780,6 +783,18 @@
         (member! m)
         (walk-body args ctx st))
       (doseq [m members] (member! m)))))
+
+(defn- handle-areduce
+  "(areduce a idx ret init expr) and (amap a idx ret expr): idx and ret
+  are locals of expr."
+  [node ctx st h]
+  (let [[_ a idx ret & more] (live-children node)
+        [init expr] (if (= h "areduce") more [nil (first more)])
+        scope (tree/node-range node)]
+    (when a (walk-node a ctx st))
+    (when init (walk-node init ctx st))
+    (let [ctx' (reduce (fn [c n] (bind-pattern n c st :let scope)) ctx (remove nil? [idx ret]))]
+      (when expr (walk-node expr ctx' st)))))
 
 (defn- handle-as-> [node ctx st]
   (let [cs (tree/children node)
@@ -1008,6 +1023,29 @@
                      names)]
     (walk-body body ctx' st)))
 
+(defn- defines-unknown?
+  "Whether a call head looks like a macro that defines vars the walk does
+  not know about (defstate, defroutes, intern): then a var missing from
+  the namespace may still exist."
+  [h]
+  (when h
+    (let [nm (if-let [i (string/index-of h "/")] (subs h (inc i)) h)]
+      (or (and (string/starts-with? nm "def")
+               (not (string/starts-with? nm "default")))
+          (contains? #{"intern" "import-vars"} nm)))))
+
+(defn- def-like!
+  "(defthing name ...): an unknown def-like macro most likely defines the
+  symbol it names, so record it as a var of the namespace."
+  [node ctx st h]
+  (let [nm-node (some-> (second (live-children node)) tree/meta-form)
+        nm (sym-text nm-node)]
+    (when (and nm (string/starts-with? (last (string/split h #"/")) "def")
+               (not (string/index-of nm "/")) (not (get (:locals ctx) nm)))
+      (add-var! ctx st (var-entry ctx nm :def nil nil [] h
+                                  (meta-private? (second (live-children node)))
+                                  (tree/node-range node) (tree/node-range nm-node))))))
+
 (defn- walk-list*
   [node ctx st]
   (let [extra (:thread-extra ctx)
@@ -1019,6 +1057,11 @@
         h (or (when (and free? (seq *lint-as*))
                 (get *lint-as* (head-fqn ctx raw)))
               (when free? (get builtin-lint-as (head-fqn ctx raw)))
+              ;; clojure.core/defn, c/let: the core form, analyzed as such
+              (when (and free? (string/index-of raw "/"))
+                (let [f (head-fqn ctx raw)]
+                  (when (string/starts-with? f "clojure.core/")
+                    (subs f (count "clojure.core/")))))
               raw)
         ;; record the head as an occurrence for special handlers too, so
         ;; core macros count as used and navigate
@@ -1043,12 +1086,16 @@
         (when (second cs) (walk-node (second cs) ctx st))
         (handle-methods ctx st (drop 2 cs)))
       (= h "as->") (do (head!) (handle-as-> node ctx st))
+      (contains? #{"areduce" "amap"} h) (do (head!) (handle-areduce node ctx st h))
       (= h "case") (do (head!) (handle-case node ctx st))
       (= h "catch") (handle-catch node ctx st)
       (contains? #{"." ".."} h) (handle-dot node ctx st h)
       (and h (contains? binding-heads h)) (do (head!) (handle-let node ctx st h))
       (and h (contains? def-kinds h)) (do (head!) (handle-def node ctx st h))
-      :else (walk-call node ctx st extra))))
+      :else (do (when (defines-unknown? h)
+                  (reset! (:open st) true)
+                  (def-like! node ctx st h))
+                (walk-call node ctx st extra)))))
 
 (defn- walk-list
   "Walk a list form. Returns the new ctx for forms that change it (ns,
@@ -1093,6 +1140,8 @@
         (contains? #{:unquote :unquote-splicing} tag)
         (doseq [c (tree/children node)] (walk-node c (dissoc ctx :syntax-quote) st))
         (= :meta tag) (walk-node (tree/meta-form node) ctx st)
+        ;; #'name may reach a private var
+        (= :var tag) (doseq [c (tree/children node)] (walk-node c (assoc ctx :var-quote true) st))
         (#{:list :fn} tag) (walk-list node ctx st)
         (= :reader-macro tag)
         (if (rc-node? node)
@@ -1124,7 +1173,7 @@
            ;; [lib :opt v ...]; [prefix sub ...] is a prefix vector instead
            (let [opt (second (tree/children n))]
              (or (nil? opt) (tree/keyword-node? opt))))
-      (let [cs (tree/children n)
+      (let [cs (clause-items (tree/children n))
             target (some-> (libspec-target (first cs)) full)
             opts (partition-all 2 (rest cs))]
         (when target
@@ -1226,6 +1275,7 @@
      :locals @(:locals st)
      :local-refs @(:local-refs st)
      :findings @(:findings st)
+     :open-ns @(:open st)
      :parse-ok (:ok parsed)
      :parse-error (:error parsed)}))
 

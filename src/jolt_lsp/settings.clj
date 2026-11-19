@@ -18,10 +18,13 @@
    :clj-depend nil
    :format {}})
 
-(def builtin-skip-arity
-  "Macros whose bodies name the target's fns unqualified, so a name there
-  may shadow a core fn of another arity: writ's laws."
-  #{"writ.spec/law"})
+(def dsl-heads
+  "Macros whose bodies name another namespace's vars as data: writ's spec
+  forms, where a law calls the target's fns unqualified (so a name may
+  shadow a core fn of another arity) and `calls` names private vars.
+  Calls under them are not arity-checked, nor private uses flagged."
+  #{"writ.spec/law" "writ.spec/calls" "writ.spec/ann" "writ.spec/graph"
+    "writ.spec/refine"})
 
 (defn- config-paths [root]
   [(str (fs/path root ".clj-kondo" "config.edn"))
@@ -64,8 +67,8 @@
                                [(str (first x))
                                 (when (vector? (second x)) (set (map str (second x))))]))
      :exclude-namespaces (set (map str (get-in cfg [:linters :unresolved-namespace :exclude])))
-     :skip-arity (into builtin-skip-arity
-                       (map str (get-in cfg [:linters :invalid-arity :skip-args])))
+     :skip-arity (set (map str (get-in cfg [:linters :invalid-arity :skip-args])))
+     :dsl-heads dsl-heads
      :levels (into {} (for [[code m] (:linters cfg)
                             :when (and (map? m) (keyword? (:level m)))]
                         [(keyword code) (:level m)]))}))

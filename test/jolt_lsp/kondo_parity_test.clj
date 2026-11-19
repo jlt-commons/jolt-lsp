@@ -125,6 +125,12 @@
   (let [root (project {"src/l/a.clj" (str "(ns l.a)\n" body)})]
     (filterv #(#{:invalid-arity :conflicting-fn-arity} (first %)) (diags root "src/l/a.clj"))))
 
+(defn- local-diags*
+  "Every diagnostic for a one-file project."
+  [body]
+  (let [root (project {"src/l/a.clj" (str "(ns l.a)\n" body)})]
+    (diags root "src/l/a.clj")))
+
 (deftest arity-of-local-fns
   (is (has? (local-diags "(let [g (fn [x] x)] (g 1 2))") :invalid-arity "g is called with 2 args but expects 1"))
   (is (has? (local-diags "(let [g #(inc %)] (g))") :invalid-arity "g is called with 0 args"))
@@ -175,3 +181,99 @@
 (deftest reader-conditional-threading-step
   (is (empty? (arity-diags "(->> 1 #?(:clj (two 2)))")))
   (is (has? (arity-diags "(->> 1 #?(:clj (two 2 3)))") :invalid-arity "with 3 args")))
+
+;; ---------------------------------------------------------------------------
+;; round 4: unresolved vars, private and deprecated calls, forward references
+
+(def ^:private r4-a
+  (str "(ns r4.a)\n"
+       "(defn pub [] 1)\n"
+       "(defn- secret [] 1)\n"
+       "(def ^:private hidden 1)\n"
+       "(defn ^:deprecated old [] 1)\n"
+       "(defn uses-old [] (old))\n"
+       "(defrecord Rec [a])\n"))
+
+(defn- r4-diags [body & [extra]]
+  (let [root (project (merge {"src/r4/a.clj" r4-a
+                              "src/r4/b.clj" (str "(ns r4.b (:require [r4.a :as a] [clojure.string :as str]))\n" body)}
+                             extra))]
+    (diags root "src/r4/b.clj")))
+
+(deftest unresolved-var
+  (is (has? (r4-diags "(a/nope 1)") :unresolved-var "Unresolved var: a/nope"))
+  (is (has? (r4-diags "(str/nope \"x\")") :unresolved-var "Unresolved var: str/nope"))
+  (is (has? (r4-diags "r4.a/nope") :unresolved-var "r4.a/nope"))
+  (testing "vars that do exist, or a namespace with defs the index cannot see"
+    (is (empty? (filter #(= :unresolved-var (first %))
+                        (r4-diags "(a/pub) (a/->Rec 1) (a/map->Rec {}) (str/join [])"))))
+    (is (empty? (filter #(= :unresolved-var (first %))
+                        (r4-diags "(m/made)" {"src/r4/m.clj" "(ns r4.m)\n(defstate made 1)\n"
+                                              "src/r4/b.clj" "(ns r4.b (:require [r4.m :as m]))\n(m/made)\n"}))))
+    (is (empty? (filter #(= :unresolved-var (first %)) (r4-diags "`(a/nope)"))))))
+
+(deftest private-call
+  (is (has? (r4-diags "(a/secret)") :private-call "#'r4.a/secret is private"))
+  (is (has? (r4-diags "a/hidden") :private-call "#'r4.a/hidden is private"))
+  (testing "var quote and syntax-quote may reach a private var"
+    (is (empty? (filter #(= :private-call (first %)) (r4-diags "#'a/secret `(a/secret)"))))))
+
+(deftest deprecated-var
+  (is (has? (r4-diags "(a/old)") :deprecated-var "#'r4.a/old is deprecated"))
+  (testing "not inside the deprecated var's own namespace definitions"
+    (let [root (project {"src/r4/a.clj" r4-a})]
+      (is (has? (diags root "src/r4/a.clj") :deprecated-var "#'r4.a/old is deprecated"))
+      (is (= 1 (count (filter #(= :deprecated-var (first %)) (diags root "src/r4/a.clj"))))))))
+
+(deftest forward-reference
+  (let [ds (local-diags* "(defn early [] (later 1))\n(defn later [x] x)\n(defn ok [] (later 2))\n")]
+    (is (has? ds :unresolved-symbol "Unresolved symbol: later"))
+    (is (= 1 (count (filter #(= :unresolved-symbol (first %)) ds)))))
+  (testing "declare, recursion and rich comments are fine"
+    (is (empty? (local-diags* "(declare later)\n(defn early [] (later 1))\n(defn later [x] x)\n")))
+    (is (empty? (local-diags* "(defn f [x] (when x (f nil)))\n")))
+    (is (empty? (local-diags* "(comment (later 1))\n(defn later [x] x)\n")))))
+
+;; ---------------------------------------------------------------------------
+;; unresolved-symbol false positives found linting sibling projects
+
+(defn- unresolved [body]
+  (->> (local-diags* body)
+       (filter #(= :unresolved-symbol (first %)))
+       (map second)
+       vec))
+
+(deftest qualified-core-def-forms
+  (is (empty? (unresolved "(clojure.core/defn f [form] form)\n(f 1)")))
+  (is (empty? (unresolved "(clojure.core/let [a 1] a)")))
+  (is (empty? (unresolved "(ns l.a (:require [clojure.core :as c]))\n(c/defn g [x] x) (c/fn [y] y) (g 1)"))))
+
+(deftest declare-with-metadata
+  (is (empty? (unresolved "(declare ^:dynamic *p*)\n(defn f [] *p*)\n(def ^:dynamic *p* 1)"))))
+
+(deftest areduce-and-amap-bind
+  (is (empty? (unresolved "(defn f [x] (areduce x i s 0.0 (+ s (aget x i))))")))
+  (is (empty? (unresolved "(defn f [x] (amap x i r (inc (aget x i))))"))))
+
+(deftest reader-conditional-params-and-meta-protocol-names
+  (is (empty? (unresolved "(defn g (#?(:clj ^long [p] :cljs ^number [p]) (inc p)))")))
+  (is (empty? (unresolved "(defn g #?(:clj [p] :cljs [q]) p)")))
+  (is (empty? (unresolved "(defprotocol P (^Object get-v [self]))\n(defn h [x] (get-v x))"))))
+
+(deftest refer-all-from-an-unknown-namespace
+  (is (empty? (unresolved "(ns l.a (:require [some.unindexed.lib :refer :all]))\n(defne stepo [a] (foo a))")))
+  (testing "a qualified unknown alias is still flagged as a namespace problem, not hidden"
+    (is (empty? (unresolved "(ns l.a (:require [some.unindexed.lib :refer :all]))\n(x/y 1)")))))
+
+(deftest writ-spec-forms-name-vars-as-data
+  (let [root (project {"src/w/a.clj" "(ns w.a)\n(defn- hidden [x] x)\n(defn ns-name [a b] a)\n"
+                       "src/w/spec.clj" "(ns w.spec (:require [w.a :as a] [writ.spec :refer [law calls]]))\n(calls a/hidden {:through []})\n(law (ns-name 1 2))\n"})]
+    (is (empty? (filter #(#{:private-call :invalid-arity} (first %)) (diags root "src/w/spec.clj"))))))
+
+(deftest unknown-def-like-macros-define-their-name
+  (is (empty? (unresolved "(ns l.a (:require [x.lc :as lc]))\n(lc/defword perform [id] id)\n(def spawn perform)"))))
+
+(deftest splicing-reader-conditional-in-a-libspec
+  (let [root (project {"src/g/gll.clj" "(ns g.gll)\n(defmacro profile [& body] `(do ~@body))\n"
+                       "src/g/r.clj" "(ns g.r (:require [g.gll :as gll #?@(:clj [:refer [profile]])]))\n(profile 1)\n"})]
+    (is (empty? (filter #(= :unresolved-symbol (first %)) (diags root "src/g/r.clj"))))))
