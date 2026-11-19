@@ -64,14 +64,23 @@
       (string/ends-with? p ".edn") :edn
       :else :unknown)))
 
-(defn file-uri [path]
-  (str "file://" path))
+(defn file-uri
+  "The file: URI of an absolute path, each segment percent-encoded as
+  clients send them (a space is %20, é is %C3%A9)."
+  [path]
+  (str "file://"
+       (string/join "/" (map #(string/replace (java.net.URLEncoder/encode ^String % "UTF-8") "+" "%20")
+                             (string/split (str path) #"/" -1)))))
 
-(defn uri->path [uri]
+(defn uri->path
+  "The path a file: URI names, percent-escapes decoded. A + is a plus in a
+  URI, not a space."
+  [uri]
   (when uri
     (-> uri
         (string/replace-first #"^file://" "")
-        (string/replace "%20" " "))))
+        (string/replace "+" "%2B")
+        (java.net.URLDecoder/decode "UTF-8"))))
 
 (defn relative [root path]
   (let [r (str root)]

@@ -30,8 +30,25 @@
 (defn- uri->path [uri]
   (some-> (paths/uri->path uri) db/normalize-path))
 
+(defn- client-uris
+  "The URIs the client has `path` open under, in the order it opened them,
+  or, when it isn't open, its URI under the workspace root as the client
+  named it. The index keys files by canonical path (symlinks resolved), so
+  a document opened through a symlink is named the way the client opened
+  it."
+  [path]
+  (or (seq (get-in @state [:uris path]))
+      ;; not open: under the root as the client named it, so a location in
+      ;; it opens the same buffer as the client's own path would
+      (let [{:keys [client-root canonical-root]} @state]
+        [(paths/file-uri
+          (if (and client-root canonical-root (not= client-root canonical-root)
+                   (string/starts-with? path (str canonical-root "/")))
+            (str client-root (subs path (count canonical-root)))
+            path))])))
+
 (defn- path->uri [path]
-  (paths/file-uri path))
+  (first (client-uris path)))
 
 (defn- source-of [path]
   (or (get (:docs @state) path)
@@ -73,18 +90,20 @@
   [path]
   (let [source (source-of path)
         ds (api/diagnostics* (root) {:file path :source source})
-        version (get-in @state [:versions path])]
-    (rpc/notify "textDocument/publishDiagnostics"
-                (cond-> {:uri (path->uri path)
-                         :diagnostics (mapv (fn [d]
-                                              {:range (lsp-range source [(:row d) (:col d)
-                                                                         (:end-row d) (:end-col d)])
-                                               :severity (case (:severity d) :error 1 :warning 2 :info 3 2)
-                                               :code (name (:code d))
-                                               :source (name (or (:source d) :jolt-lsp))
-                                               :message (:message d)})
-                                            ds)}
-                  version (assoc :version version)))))
+        version (get-in @state [:versions path])
+        diagnostics (mapv (fn [d]
+                            {:range (lsp-range source [(:row d) (:col d)
+                                                       (:end-row d) (:end-col d)])
+                             :severity (case (:severity d) :error 1 :warning 2 :info 3 2)
+                             :code (name (:code d))
+                             :source (name (or (:source d) :jolt-lsp))
+                             :message (:message d)})
+                          ds)]
+    ;; one push per URI the client has the file open under
+    (doseq [uri (client-uris path)]
+      (rpc/notify "textDocument/publishDiagnostics"
+                  (cond-> {:uri uri :diagnostics diagnostics}
+                    version (assoc :version version))))))
 
 (defn- handle-definition [params]
   (mapv location->lsp (definitions params)))
@@ -365,7 +384,10 @@
       (let [uri (or (:rootUri params) (get-in params [:workspaceFolders 0 :uri]))
             root (or (some-> uri paths/uri->path) (System/getProperty "user.dir"))]
         (api/ensure-db root)
-        (swap! state assoc :initialized? true :client-capabilities (:capabilities params))
+        (swap! state assoc :initialized? true :client-capabilities (:capabilities params)
+               ;; the root as the client names it, and as the index does
+               :client-root (string/replace root #"/+$" "")
+               :canonical-root (db/normalize-path root))
         (respond {:capabilities
                   {:textDocumentSync {:openClose true :change 1 :save true}
                    :definitionProvider true
@@ -400,7 +422,11 @@
       (let [path (doc-path params)
             text (get-in params [:textDocument :text])]
         (swap! state #(-> % (assoc-in [:docs path] text)
-                          (assoc-in [:versions path] (get-in params [:textDocument :version]))))
+                          (assoc-in [:versions path] (get-in params [:textDocument :version]))
+                          (update-in [:uris path] (fn [uris]
+                                                    (let [uri (get-in params [:textDocument :uri])
+                                                          uris (vec uris)]
+                                                      (if (some #{uri} uris) uris (conj uris uri)))))))
         (if (and (db/file-by-path (db*) path)
                  (= text (try (slurp path) (catch Throwable _ nil))))
           (publish-diagnostics path)
@@ -418,10 +444,18 @@
 
       "textDocument/didClose"
       (let [path (doc-path params)
-            buffer (get-in @state [:docs path])]
-        (swap! state #(-> % (update :docs dissoc path) (update :versions dissoc path)))
-        ;; an unsaved buffer's analysis gives way to the file on disk
-        (when (and buffer (not= buffer (try (slurp path) (catch Throwable _ nil))))
+            buffer (get-in @state [:docs path])
+            uri (get-in params [:textDocument :uri])
+            others (vec (remove #{uri} (get-in @state [:uris path])))]
+        ;; the buffer and its version go with the last URI the file is open under
+        (swap! state #(if (seq others)
+                        (assoc-in % [:uris path] others)
+                        (-> % (update :docs dissoc path) (update :versions dissoc path)
+                            (update :uris dissoc path))))
+        ;; an unsaved buffer's analysis gives way to the file on disk, once
+        ;; no URI has the file open
+        (when (and (empty? others) buffer
+                   (not= buffer (try (slurp path) (catch Throwable _ nil))))
           (api/refresh-file! (root) path)))
 
       "workspace/didChangeWatchedFiles" (handle-watched params)
