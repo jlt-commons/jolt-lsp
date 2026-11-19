@@ -30,7 +30,7 @@ returns `{:ok false :candidates [...]}`. Paths may be relative to `root`.
 | `jolt_references` | `symbol` or `file`+`line`+`col` |
 | `jolt_hover` | `symbol` or `file`+`line`+`col` — doc, arglists, full source (`code`) |
 | `jolt_symbols` | `file` |
-| `jolt_diagnostics` | `file?` (none = whole project), `kondo?` |
+| `jolt_diagnostics` | `file?` (none = whole project) — clj-kondo's checks, built in |
 | `jolt_call_hierarchy` | `symbol`, `direction` (`callers`/`callees`) |
 | `jolt_impact` | `symbol` — transitive callers with distances |
 | `jolt_deps` | `ns`, `direction` (`dependencies`/`dependents`/`cycles`) |

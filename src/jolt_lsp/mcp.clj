@@ -62,9 +62,8 @@ navigation over a project index, diagnostics, refactors, and syntax repair.
     :description "Outline a file: its definitions with ranges."
     :inputSchema (obj {:root root-prop :file file-prop} ["file"])}
    {:name "jolt_diagnostics"
-    :description "Syntax errors, unresolved symbols, unused requires/refers/bindings/privates, duplicate requires (and clj-kondo when installed) for a file, or the whole project when no file is given."
-    :inputSchema (obj {:root root-prop :file file-prop :all {:type "boolean"}
-                       :kondo {:type "boolean"}})}
+    :description "Diagnostics for a file, or the whole project when no file is given: syntax errors, unresolved symbols/namespaces/vars, arity and type mismatches, private and deprecated uses, unused requires/refers/bindings/privates/values, and the rest of clj-kondo's checks, with the project's clj-kondo hooks and config."
+    :inputSchema (obj {:root root-prop :file file-prop :all {:type "boolean"}})}
    {:name "jolt_call_hierarchy"
     :description "Direct and transitive callers or callees of a var."
     :inputSchema (obj {:root root-prop :symbol symbol-prop

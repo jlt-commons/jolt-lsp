@@ -74,8 +74,7 @@
         _ (spit (str tmp "/linters/my.clj")
                 "(ns my.linters)\n(defn analyze [ctx] [{:row 1 :col 1 :end-row 1 :end-col 2 :severity :warning :code :my-warning :message \"custom\"}])\n")
         _ (spit (str tmp "/.jolt-lsp/config.edn")
-                (pr-str {:kondo false
-                         :custom-linters [{:file "linters/my.clj" :fn "my.linters/analyze"}]
+                (pr-str {:custom-linters [{:file "linters/my.clj" :fn "my.linters/analyze"}]
                          :clj-depend {:rules [{:from "app.core" :to "app.util"}]}}))
         _ (api/refresh! tmp)
         ds (api/diagnostics* tmp {:file core})]
