@@ -33,14 +33,16 @@
          (try (require (symbol nsn)) true (catch Throwable _ false))))))
 
 (defn builtin-ns?
-  "A namespace Jolt itself provides (jolt.host, jolt.nrepl, clojure.math):
-  loaded, or loadable from the runtime. A qualified name into it needs no
-  require."
+  "A namespace Jolt itself provides (jolt.host, jolt.nrepl, clojure.math). A
+  qualified name into it needs no require. jolt.* is Jolt's own prefix, so
+  all of it counts: the standalone jolt-lsp binary cannot load every Jolt
+  namespace a project's runtime can. A clojure.* one counts when this
+  process has or can load it."
   [nsn]
   (boolean
    (and nsn (or (clojure.string/starts-with? nsn "jolt.")
-                (clojure.string/starts-with? nsn "clojure."))
-        (loadable nsn))))
+                (and (clojure.string/starts-with? nsn "clojure.")
+                     (loadable nsn))))))
 
 (defn public-names
   "{name fqn} of a core or built-in namespace's public vars, for :use and

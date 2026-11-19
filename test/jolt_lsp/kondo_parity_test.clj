@@ -605,3 +605,8 @@
   (let [root (project {"src/pm/a.clj" "(ns pm.a (:refer-clojure :exclude [-]))\n(defmacro vp [n f & more] nil)\n(vp - Prim/sub \"doc\" (fn [x] x))\n(defn g [] (- 1 2))\n"
                        ".clj-kondo/config.edn" "{:lint-as {pm.a/vp clojure.core/def}}"})]
     (is (empty? (filter #(#{:invalid-arity :unresolved-symbol} (first %)) (diags root "src/pm/a.clj"))))))
+
+(deftest any-jolt-namespace-is-built-in
+  ;; the binary cannot load every jolt.* namespace a project's runtime has
+  (is (empty? (filter #(= :unresolved-namespace (first %))
+                      (local-diags* "(defn f [] (jolt.not-in-this-process/start))")))))
