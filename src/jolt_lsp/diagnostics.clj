@@ -111,11 +111,16 @@
           (str "#'" (:fqn r) " is deprecated"))))
 
 (defn type-mismatch
-  "Arguments to a core fn whose type, as written, its spec does not take."
-  [refs]
+  "Arguments whose type, as inferred, the called fn's spec does not take:
+  the user's :type-mismatch spec, the fn's own (from its type hints), or a
+  core spec. `user-specs` {fqn spec}; `var-of` looks a var up."
+  [refs user-specs var-of]
   (for [r refs
         :when (and (:arg-tags r) (:fqn r) (checked-ref? r))
-        m (types/mismatches (:fqn r) (:arg-tags r))
+        :let [own (:type-spec (var-of (:fqn r)))
+              specs (cond-> (or user-specs {})
+                      (and own (not (contains? user-specs (:fqn r)))) (assoc (:fqn r) own))]
+        m (types/mismatches specs (:fqn r) (:arg-tags r))
         :let [ar (get (:arg-ranges r) (:index m))]
         :when ar]
     (diag ar :error :type-mismatch (:message m))))
@@ -264,7 +269,7 @@
                     (unresolved-var refs var-of (ns-state db))
                     (private-call refs var-of)
                     (deprecated-var refs var-of)
-                    (type-mismatch refs)
+                    (type-mismatch refs (:type-specs db) var-of)
                     (aliased-referred-var refs)
                     (walk-findings (db/findings-in-file db fid))
                     (unused-namespaces requires refers u)

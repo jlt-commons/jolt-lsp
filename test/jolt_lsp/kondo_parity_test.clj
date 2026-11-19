@@ -472,3 +472,59 @@
 
 (deftest referred-var-used-via-alias
   (is (has? (arity-diags* "(a/two 1 2)") :aliased-referred-var "Var two is referred but used via alias: a")))
+
+;; ---------------------------------------------------------------------------
+;; type inference: locals, return types, hints, user specs
+
+(defn- types-in [files rel]
+  (let [root (project files)]
+    (filterv #(= :type-mismatch (first %)) (diags root rel))))
+
+(defn- types-of [body]
+  (types-in {"src/ti/a.clj" (str "(ns ti.a)\n" body)} "src/ti/a.clj"))
+
+(deftest let-locals-carry-their-init-type
+  (is (has? (types-of "(defn f [] (let [s \"x\"] (inc s)))") :type-mismatch "received: string"))
+  (is (has? (types-of "(defn f [] (let [s (str 1)] (inc s)))") :type-mismatch "received: string"))
+  (is (empty? (types-of "(defn f [n] (let [s n] (inc s)))")))
+  (testing "a shadowing binding drops the type"
+    (is (empty? (types-of "(defn f [n] (let [s \"x\" s n] (inc s)))")))))
+
+(deftest project-fn-return-types
+  (is (has? (types-of "(defn f [] \"x\")\n(defn g [] (inc (f)))") :type-mismatch "received: string"))
+  (is (has? (types-of "(defn f [] \"x\")\n(defn g [] (f))\n(defn h [] (inc (g)))") :type-mismatch "received: string"))
+  (is (has? (types-of "(defn f [x] (let [s (str x)] s))\n(defn g [] (inc (f 1)))") :type-mismatch "received: string"))
+  (is (has? (types-in {"src/ti/a.clj" "(ns ti.a (:require [clojure.string :as s]))\n(defn f [] (s/join [1]))\n"
+                       "src/ti/b.clj" "(ns ti.b (:require [ti.a :as a]))\n(defn g [] (inc (a/f)))\n"}
+                      "src/ti/b.clj")
+            :type-mismatch "received: string"))
+  (testing "if is the union of its branches"
+    (is (has? (types-of "(defn h [x] (if x \"a\" :b))\n(defn g [] (inc (h 1)))") :type-mismatch "received: keyword or string"))
+    (is (empty? (types-of "(defn h [x] (if x \"a\" 1))\n(defn g [] (inc (h 1)))"))))
+  (testing "mutual recursion terminates"
+    (is (empty? (types-of "(declare b)\n(defn a [] (b))\n(defn b [] (a))\n(defn c [] (inc (a)))")))))
+
+(deftest type-hints
+  (is (has? (types-of "(defn k [^String s] s)\n(defn g [] (k 1))") :type-mismatch "Expected: string or nil, received: positive integer."))
+  (is (has? (types-of "(defn m [^long n] (subs n 1))") :type-mismatch "received: long"))
+  (is (has? (types-of "(defn ^String r [x] (identity x))\n(defn g [] (inc (r 1)))") :type-mismatch "received: string or nil"))
+  (is (has? (types-of "(defn r ^String [x] (identity x))\n(defn g [] (inc (r 1)))") :type-mismatch "received: string or nil")))
+
+(deftest def-values-have-types
+  (is (has? (types-of "(def pi \"3\")\n(defn g [] (inc pi))") :type-mismatch "received: string")))
+
+(deftest user-type-specs
+  (is (has? (types-in {"src/ti/a.clj" "(ns ti.a)\n(defn f [x] x)\n(defn g [] (f :k))\n"
+                       ".clj-kondo/config.edn" "{:linters {:type-mismatch {:namespaces {ti.a {f {:arities {1 {:args [:string] :ret :string}}}}}}}}"}
+                      "src/ti/a.clj")
+            :type-mismatch "Expected: string, received: keyword.")))
+
+(deftest inference-false-positives
+  (testing "dynamic and nil-valued defs are placeholders"
+    (is (empty? (types-of "(def ^:dynamic *why* nil)\n(defn f [] (swap! *why* conj 1))")))
+    (is (empty? (types-of "(def state nil)\n(defn f [] (swap! state inc))"))))
+  (testing "if-some and when-let locals are not nil inside"
+    (is (empty? (types-of "(def ^:dynamic *s* nil)\n(defn f [] (if-some [c *s*] (swap! c inc) 1))")))
+    (is (empty? (types-of "(defn g [x] (when x (atom 1)))\n(defn f [] (when-let [c (g 1)] (swap! c inc)))"))))
+  (testing "loop locals are rebound by recur"
+    (is (empty? (types-of "(defn f [xs] (loop [m nil xs xs] (if (seq xs) (recur (inc (or m 0)) (rest xs)) (inc m))))")))))

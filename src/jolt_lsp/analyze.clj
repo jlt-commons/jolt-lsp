@@ -82,6 +82,7 @@
    :findings (atom [])
    :open (atom false)
    :defined (atom #{})
+   :specs (atom {})
    :local-seq (atom 0)})
 
 (defn- sym-text [node]
@@ -313,6 +314,7 @@
                                  nodes))]
     (if idx
       {:params (tree/meta-form (nth nodes idx))
+       :params-node (nth nodes idx)
        :body (subvec nodes (inc idx))}
       {:arities (filterv #(= :list (tree/tag %)) nodes)})))
 
@@ -320,7 +322,7 @@
   (let [cs (clause-items (tree/children arity))
         p (first cs)]
     (if (and p (= :vector (tree/tag (tree/meta-form p))))
-      {:params (tree/meta-form p) :body (rest cs)}
+      {:params (tree/meta-form p) :params-node p :body (rest cs)}
       {:params nil :body cs})))
 
 (defn- arglists-str [{:keys [params arities]}]
@@ -463,6 +465,124 @@
       (assoc-in ctx [:local-arities id] info)
       ctx)))
 
+(defn- union-tag
+  "The type of a value that is one of these: a set, or :any when any of
+  them is unknown."
+  [tags]
+  (let [flat (set (mapcat #(if (set? %) % [%]) tags))]
+    (cond (contains? flat :any) :any
+          (= 1 (count flat)) (first flat)
+          :else flat)))
+
+(defn- pattern-names
+  "Every symbol a destructuring pattern binds (and, harmlessly, names it
+  mentions)."
+  [node]
+  (if (tree/branch? node)
+    (mapcat pattern-names (tree/children node))
+    (when-let [t (sym-text node)] (when-not (skip-symbols t) [t]))))
+
+(declare expr-tag*)
+
+(defn- let-body-tag
+  "The type of a let-like form's value: its bindings typed in order, then
+  its last body form."
+  [ctx env [_ bv & body]]
+  (if-not (and bv (= :vector (tree/tag bv)))
+    :any
+    (let [env (reduce (fn [env [p init]]
+                        (let [p (tree/meta-form p)]
+                          (if (tree/symbol-node? p)
+                            (assoc env (sym-text p) (if init (expr-tag* ctx env init) :any))
+                            (into env (map #(vector % :any)) (pattern-names p)))))
+                      env
+                      (partition-all 2 (live-children bv)))]
+      (if-let [l (last (remove tree/uneval? body))] (expr-tag* ctx env l) :nil))))
+
+(defn- expr-tag*
+  "The type of an expression, as clj-kondo infers it: a literal's tag, a
+  local's (from its init or hint), the union of an if's branches, a let's
+  or do's last form, and for a call {:call head :arity n} and for a var
+  {:var name}, which the index resolves to what the fn returns or the var
+  holds. `env` holds the types of locals bound inside the expression."
+  [ctx env node]
+  (let [n (tree/meta-form node)
+        t (tree/tag n)
+        local? (fn [nm] (or (contains? env nm) (get (:locals ctx) nm)))]
+    (cond
+      (nil? n) :any
+      (and (= :token t) (= :symbol (:kind n)))
+      (let [nm (sym-text n)]
+        (cond (contains? env nm) (get env nm)
+              (get (:locals ctx) nm) (get-in ctx [:local-tags (get (:locals ctx) nm)] :any)
+              :else {:var nm}))
+
+      (= :fn t) :fn
+
+      (= :list t)
+      (let [[hd & args] (live-children n)
+            h (sym-text hd)
+            h (when (and h (not (local? h)))
+                (if (string/starts-with? h "clojure.core/") (subs h 13) h))
+            tag-of #(expr-tag* ctx env %)]
+        (case h
+          nil :any
+          ("if" "if-not") (union-tag [(tag-of (nth args 1 nil))
+                                      (if (> (count args) 2) (tag-of (nth args 2)) :nil)])
+          ("when" "when-not") (union-tag [(if-let [l (last (rest args))] (tag-of l) :nil) :nil])
+          "do" (if-let [l (last args)] (tag-of l) :nil)
+          ("let" "let*" "binding" "with-open") (let-body-tag ctx env (live-children n))
+          ("fn" "fn*") :fn
+          "cond" (union-tag (concat (map tag-of (take-nth 2 (rest args)))
+                                    (when-not (contains? #{":else" "true"} (some-> (last (butlast args)) tree/text))
+                                      [:nil])))
+          ("loop" "->" "->>" "some->" "some->>" "cond->" "cond->>" "as->" "case" "condp"
+           "if-let" "if-some" "when-let" "when-some" "for" "doseq" "try") :any
+          {:call h :arity (count args)}))
+
+      :else (types/literal-tag {:tag t :kind (:kind n) :text (tree/text n)}))))
+
+(defn- expr-tag [ctx node] (expr-tag* ctx {} node))
+
+(defn- hint-tag
+  "The type a ^Hint on a node names, or nil."
+  [node]
+  (when (and node (= :meta (tree/tag node)))
+    (let [[m inner] (tree/children node)]
+      (or (when (tree/symbol-node? m) (types/tag-from-meta (sym-text m)))
+          (hint-tag inner)))))
+
+(defn- bind-tag
+  "Note that local `nm`, just bound in ctx, holds a value of this type."
+  [ctx nm tag]
+  (let [id (get-in ctx [:locals nm])]
+    (if (and id (not= :synthetic id) tag (not= :any tag))
+      (assoc-in ctx [:local-tags id] tag)
+      ctx)))
+
+(defn- bind-param-hints
+  "Types for params that carry a hint (^String s, ^long n)."
+  [ctx params]
+  (reduce (fn [c p]
+            (let [nm (some-> p tree/meta-form sym-text)]
+              (if-let [t (and nm (hint-tag p))] (bind-tag c nm t) c)))
+          ctx
+          (when params (live-children params))))
+
+(defn- binding-tag
+  "The type a local bound by this kind of form holds, from its init's:
+  if-let and friends bind it only when it is not nil; loop rebinds it on
+  every recur, so its init says nothing."
+  [kind tag]
+  (cond
+    (contains? #{:loop :loop*} kind) nil
+    (contains? #{:if-let :if-some :when-let :when-some :when-first} kind)
+    (cond (= :nil tag) nil
+          (set? tag) (union-tag (disj tag :nil))
+          (and (keyword? tag) (= "nilable" (namespace tag))) (keyword (name tag))
+          :else tag)
+    :else tag))
+
 (defn- bind-pattern [node ctx st kind scope-range]
   (let [node (some-> node tree/meta-form)]
     (cond
@@ -515,7 +635,9 @@
             (let [ctx' (bind-pattern pattern ctx st kind scope-range)
                   p (some-> pattern tree/meta-form)]
               (if (and p (tree/symbol-node? p))
-                (bind-arity ctx' (sym-text p) (fn-node-arity init))
+                (-> ctx'
+                    (bind-arity (sym-text p) (fn-node-arity init))
+                    (bind-tag (sym-text p) (when init (binding-tag kind (expr-tag ctx init)))))
                 ctx')))
           ctx
           (partition-all 2 (live-children vnode))))
@@ -587,28 +709,50 @@
          (check-unused! node ctx st))
        (walk-node node (assoc ctx :implicit-do true) st)))))
 
+(defn- record-arity-type!
+  "Add one body's types to a fn's spec, in clj-kondo's shape
+  ({:arities {n {:ret t :args [t ...]} :varargs {:min-arity n ...}}}):
+  what it returns (a ^Hint on the params vector, else its last form's
+  type) and its hinted params."
+  [sink params params-node body pctx]
+  (let [pa (arity/param-arity (params-texts params))
+        positional (take-while #(not= "&" (tree/text %)) (live-children params))
+        hints (mapv hint-tag positional)
+        last-form (last (remove tree/uneval? body))
+        ret (or (hint-tag params-node)
+                (if last-form (expr-tag pctx last-form) :nil))
+        entry (cond-> {:ret ret}
+                (some some? hints) (assoc :args hints)
+                (:varargs pa) (assoc :min-arity (:min-arity pa)))]
+    (swap! sink assoc-in [:arities (if (:varargs pa) :varargs (:fixed-arity pa))] entry)))
+
 (defn- walk-fn-tail
   "Bind the params of a single-arity or multi-arity fn tail and walk its
   body. `kind` is the local kind for the params."
   ([nodes ctx st] (walk-fn-tail nodes ctx st :param))
   ([nodes ctx st kind]
-   (let [{:keys [params body arities]} (fn-tail nodes)
+   (let [{:keys [params params-node body arities]} (fn-tail nodes)
          ;; a recur in a method body has `this` to account for; leave it
          recur-of (fn [params]
                     (when (and params (not= kind :method-param))
                       (arity/recur-arity (params-texts params))))
-         ctx (-> ctx (dissoc :seen-recur) (assoc :in-fn true))]
+         sink (:ret-sink ctx)
+         ctx (-> ctx (dissoc :seen-recur :ret-sink) (assoc :in-fn true))
+         bind-params (fn [params scope]
+                       (-> (bind-pattern params ctx st kind scope)
+                           (bind-param-hints params)))]
      (if params
-       (walk-implicit-body body (assoc (bind-pattern params ctx st kind (tree/node-range params))
-                                       :recur-arity (recur-of params))
-                           st true)
+       (let [pctx (bind-params params (tree/node-range params))]
+         (when sink (record-arity-type! sink params params-node body pctx))
+         (walk-implicit-body body (assoc pctx :recur-arity (recur-of params)) st true))
        (let [seen (atom #{})]
          (doseq [arity arities]
-           (let [{:keys [params body]} (arity-parts arity)
+           (let [{:keys [params params-node body]} (arity-parts arity)
                  pa (some-> params params-texts arity/param-arity)
                  pctx (if params
-                        (bind-pattern params ctx st kind (tree/node-range arity))
+                        (bind-params params (tree/node-range arity))
                         ctx)]
+             (when (and sink params) (record-arity-type! sink params params-node body pctx))
              (when (and pa (not (:varargs pa)))
                (when (contains? @seen (:fixed-arity pa))
                  (add-finding! ctx st params :conflicting-fn-arity :error
@@ -665,10 +809,25 @@
                               h private? (tree/node-range node)
                               (tree/node-range (tree/meta-form name-node)))
                    (assoc :deprecated deprecated?)
+                   (cond-> (and (#{"def" "defonce"} h) (seq after-doc)
+                                (not (fn-node-arity (last after-name)))
+                                ;; a dynamic var is rebound, and (def x nil)
+                                ;; is a placeholder something sets later
+                                (not (meta-flag? name-node ":dynamic"))
+                                (not= "nil" (tree/text (last after-name))))
+                     ;; what a def holds, for its uses as a value
+                     (assoc :val-tag (expr-tag ctx (last after-name))))
                    (with-arity (def-arity h tail after-name)))))
       (case h
         ("defn" "defn-" "defmacro")
-        (walk-fn-tail (drop-while #(= :map (tree/tag %)) after-doc) ctx' st)
+        (let [sink (atom {})
+              name-hint (hint-tag name-node)]
+          (walk-fn-tail (drop-while #(= :map (tree/tag %)) after-doc) (assoc ctx' :ret-sink sink) st)
+          (when (and fqn (= h "defn") (not (:in-comment ctx)) (seq (:arities @sink)))
+            (swap! (:specs st) assoc fqn
+                   (cond-> @sink
+                     ;; (defn ^String f ...): every arity returns that
+                     name-hint (update :arities update-vals #(assoc % :ret name-hint))))))
 
         ("deftest" "defspec")
         (walk-body after-name ctx' st)
@@ -1092,20 +1251,6 @@
                     (str "recur argument count mismatch (expected " expected
                          ", got " n ")")))))
 
-(defn- arg-tag
-  "What the walk knows of an argument's type: a literal's tag, a nested
-  call to resolve later ({:call head :arity n}), else :any."
-  [ctx node]
-  (let [n (tree/meta-form node)]
-    (cond
-      (= :list (tree/tag n))
-      (let [h (some-> (first (tree/children n)) sym-text)]
-        (if (and h (not (get (:locals ctx) h)))
-          {:call h :arity (count (rest (live-children n)))}
-          :any))
-      (and (= :token (tree/tag n)) (= :symbol (:kind n))) :any
-      :else (types/literal-tag {:tag (tree/tag n) :kind (:kind n) :text (tree/text n)}))))
-
 (defn- format-arg-count
   "How many arguments a format string takes, after clj-kondo's
   analyze-format-string: %% and %n take none, %<n>$ names a position and
@@ -1145,7 +1290,7 @@
               (add-occ! ctx st head true n
                         ;; a threaded value's type is unknown: no types then
                         (when-not extra
-                          {:arg-tags (mapv #(arg-tag ctx %) args)
+                          {:arg-tags (mapv #(expr-tag ctx %) args)
                            :arg-ranges (mapv tree/node-range args)})))
           (walk-node head ctx st))
         ;; the heads of the calls around an occurrence: if one is a macro,
@@ -1476,12 +1621,13 @@
     {:path path
      :ns (:ns ctx)
      :ns-meta (:ns-meta ctx)
-     :vars @(:vars st)
      :occurrences @(:occurrences st)
      :keywords @(:keywords st)
      :locals @(:locals st)
      :local-refs @(:local-refs st)
      :findings @(:findings st)
+     :vars (let [specs @(:specs st)]
+             (mapv #(if-let [sp (get specs (:fqn %))] (assoc % :type-spec sp) %) @(:vars st)))
      :open-ns @(:open st)
      :parse-ok (:ok parsed)
      :parse-error (:error parsed)}))

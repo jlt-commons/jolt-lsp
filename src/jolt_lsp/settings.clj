@@ -156,4 +156,9 @@
      :levels (into {} (for [[code m] (:linters cfg)
                             :when (and (map? m) (keyword? (:level m)))]
                         [(keyword code) (:level m)]))
+     ;; {"ns/name" {:arities {n {:args [...] :ret t}}}}: clj-kondo's
+     ;; [:linters :type-mismatch :namespaces]
+     :type-specs (into {} (for [[nsn fns] (get-in cfg [:linters :type-mismatch :namespaces])
+                                [nm spec] fns]
+                            [(str nsn "/" nm) spec]))
      :hooks (hooks-config root cfg dirs)})))

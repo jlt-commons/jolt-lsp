@@ -17,8 +17,8 @@
 (ann literal-tag [Literal -> Tag])
 (ann match? [Tag Tag -> Bool])
 (ann tag->label [Tag -> String])
-(ann ret-tag [String Nat -> Tag])
-(ann mismatches [String (List Tag) -> (List Mismatch)])
+(ann ret-tag [(Map String Any) String Nat -> Tag])
+(ann mismatches [(Map String Any) String (List Tag) -> (List Mismatch)])
 
 (graph typing
   {:start :literal
@@ -77,38 +77,65 @@
 
 (law inc-wants-a-number
   (= [{:index 0 :message "Expected: number, received: string."}]
-     (mismatches "clojure.core/inc" [:string])))
+     (mismatches {} "clojure.core/inc" [:string])))
 
 (law rest-args-checked
-  (= [1] (map :index (mismatches "clojure.core/+" [:pos-int :string :double]))))
+  (= [1] (map :index (mismatches {} "clojure.core/+" [:pos-int :string :double]))))
 
 (law matching-args-are-quiet
-  (and (empty? (mismatches "clojure.core/inc" [:pos-int]))
-       (empty? (mismatches "clojure.core/inc" [:any]))
-       (empty? (mismatches "clojure.string/join" [:string :vector]))
-       (empty? (mismatches "app.core/whatever" [:string]))))
+  (and (empty? (mismatches {} "clojure.core/inc" [:pos-int]))
+       (empty? (mismatches {} "clojure.core/inc" [:any]))
+       (empty? (mismatches {} "clojure.string/join" [:string :vector]))
+       (empty? (mismatches {} "app.core/whatever" [:string]))))
 
 (law join-wants-a-seqable-last
-  (= [1] (map :index (mismatches "clojure.string/join" [:string :keyword]))))
+  (= [1] (map :index (mismatches {} "clojure.string/join" [:string :keyword]))))
 
 (law return-tags
-  (and (= :string (ret-tag "clojure.core/str" 2))
-       (= :any (ret-tag "app.core/f" 1))))
+  (and (= :string (ret-tag {} "clojure.core/str" 2))
+       (= :any (ret-tag {} "app.core/f" 1))))
 
 (law unknown-types-never-mismatch
   (forall [fqn String, n Nat]
-    (empty? (mismatches fqn (vec (repeat (min n 6) :any))))))
+    (empty? (mismatches {} fqn (vec (repeat (min n 6) :any))))))
 
 (law only-core-specs-apply
   (forall [nm String, n Nat]
-    (and (empty? (mismatches (str "app.ns/" nm) (vec (repeat (min n 6) :string))))
-         (= :any (ret-tag (str "app.ns/" nm) n)))))
+    (and (empty? (mismatches {} (str "app.ns/" nm) (vec (repeat (min n 6) :string))))
+         (= :any (ret-tag {} (str "app.ns/" nm) n)))))
 
 (law mismatch-index-is-an-argument
   (forall [fqn String, tags (List Keyword)]
-    (every? #(< (:index %) (count tags)) (mismatches fqn tags))))
+    (every? #(< (:index %) (count tags)) (mismatches {} fqn tags))))
 
 (law ret-tag-from-spec
   (forall [n Nat]
-    (and (= :string (ret-tag "clojure.core/str" n))
-         (= :string (ret-tag "clojure.string/join" (inc (min n 1)))))))
+    (and (= :string (ret-tag {} "clojure.core/str" n))
+         (= :string (ret-tag {} "clojure.string/join" (inc (min n 1)))))))
+
+(ann tag-from-meta [String -> (Opt Keyword)])
+
+(law hints
+  (and (= :long (tag-from-meta "long"))
+       (= :nilable/string (tag-from-meta "String"))
+       (= :nilable/string (tag-from-meta "java.lang.String"))
+       (nil? (tag-from-meta "MyRecord"))))
+
+(law extra-specs-come-first
+  (and (= [0] (map :index (mismatches {"app.a/f" {:arities {1 {:args [:string]}}}} "app.a/f" [:keyword])))
+       (= :string (ret-tag {"app.a/f" {:arities {1 {:ret :string}}}} "app.a/f" 1))
+       (empty? (mismatches {"clojure.core/inc" {:arities {1 {:args [:any]}}}} "clojure.core/inc" [:string]))))
+
+(def hint-names
+  #{"void" "boolean" "Boolean" "java.lang.Boolean" "byte" "Byte" "java.lang.Byte"
+    "Number" "java.lang.Number" "int" "Integer" "java.lang.Integer" "long" "Long"
+    "java.lang.Long" "short" "Short" "java.lang.Short" "double" "float" "Double"
+    "java.lang.Double" "Float" "java.lang.Float" "ratio?" "CharSequence"
+    "java.lang.CharSequence" "String" "java.lang.String" "char" "Character"
+    "java.lang.Character" "Seqable" "clojure.lang.Seqable" "java.util.List" "class"
+    "Class" "java.lang.Class" "Date" "java.util.Date" "Future"
+    "java.util.concurrent.Future" "future"})
+
+(law only-known-hints-have-a-type
+  (forall [h String]
+    (= (contains? hint-names h) (some? (tag-from-meta h)))))

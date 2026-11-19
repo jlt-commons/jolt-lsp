@@ -2,8 +2,8 @@
 ;; (https://github.com/clj-kondo/clj-kondo, src/clj_kondo/impl/types.clj),
 ;; Copyright (c) Michiel Borkent, distributed under the Eclipse Public
 ;; License 1.0: known-types, is-a-relations, could-be-relations, labels,
-;; nilable?, unnil, label, match?, tag->label, called-arity and the argument
-;; walk of lint-arg-types. See NOTICE.
+;; nilable?, unnil, label, match?, tag->label, tag-from-meta, called-arity
+;; and the argument walk of lint-arg-types. See NOTICE.
 (ns jolt-lsp.types
   "Argument types against clj-kondo's specs for clojure.core, clojure.string
   and clojure.set. Pure.
@@ -190,9 +190,48 @@
              :any)
     :any))
 
-(defn- spec-of [fqn]
-  (when-let [i (some-> fqn (string/index-of "/"))]
-    (get-in specs [(subs fqn 0 i) (symbol (subs fqn (inc i)))])))
+(defn tag-from-meta
+  "The type a type hint names (^String, ^long), or nil. A class hint is
+  nilable: Clojure cannot say a String is never nil."
+  [hint]
+  (case (str hint)
+    "void" :nil
+    "boolean" :boolean
+    ("Boolean" "java.lang.Boolean") :nilable/boolean
+    "byte" :byte
+    ("Byte" "java.lang.Byte") :nilable/byte
+    ("Number" "java.lang.Number") :nilable/number
+    "int" :int
+    ("Integer" "java.lang.Integer") :nilable/int
+    "long" :long
+    ("Long" "java.lang.Long") :nilable/long
+    "short" :short
+    ("Short" "java.lang.Short") :nilable/short
+    "double" :double
+    "float" :float
+    ("Double" "java.lang.Double") :nilable/double
+    ("Float" "java.lang.Float") :nilable/float
+    "ratio?" :ratio
+    ("CharSequence" "java.lang.CharSequence") :nilable/char-sequence
+    ("String" "java.lang.String") :nilable/string
+    "char" :char
+    ("Character" "java.lang.Character") :nilable/char
+    ("Seqable" "clojure.lang.Seqable") :seqable
+    "java.util.List" :nilable/list
+    "class" :class
+    ("Class" "java.lang.Class") :nilable/class
+    ("Date" "java.util.Date") :nilable/inst
+    ("Future" "java.util.concurrent.Future") :nilable/future
+    "future" :future
+    nil))
+
+(defn- spec-of
+  "The spec for fqn: from `extra` ({fqn spec}: the user's :type-mismatch
+  config, then types the project's own fns declare), else the built-ins."
+  [extra fqn]
+  (or (get extra fqn)
+      (when-let [i (some-> fqn (string/index-of "/"))]
+        (get-in specs [(subs fqn 0 i) (symbol (subs fqn (inc i)))]))))
 
 (defn- called-arity [arities arity]
   (or (get arities arity)
@@ -204,8 +243,8 @@
 (defn ret-tag
   "The type a call to fqn with n args returns, when the spec says; :any
   otherwise."
-  [fqn n]
-  (let [r (:ret (called-arity (:arities (spec-of fqn)) n))]
+  [extra fqn n]
+  (let [r (:ret (called-arity (:arities (spec-of extra fqn)) n))]
     (if (or (keyword? r) (set? r)) r :any)))
 
 (defn- non-match [i s t]
@@ -229,9 +268,9 @@
 (defn mismatches
   "For a call to fqn with arguments of these types, the ones no type of the
   spec admits: [{:index n :message ...}]."
-  [fqn tags]
+  [extra fqn tags]
   (let [tags (vec tags)
-        args-spec (:args (called-arity (:arities (spec-of fqn)) (count tags)))]
+        args-spec (:args (called-arity (:arities (spec-of extra fqn)) (count tags)))]
     (if-not (sequential? args-spec)
       []
       (vec (for [[i s] (map-indexed vector (expected-types args-spec (count tags)))

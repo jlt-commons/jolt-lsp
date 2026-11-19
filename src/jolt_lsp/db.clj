@@ -178,6 +178,78 @@
      :core (let [ex (get-in a [:ns-meta :core-excludes])]
              (if (seq ex) (apply disj @core-names ex) @core-names))}))
 
+;; ---------------------------------------------------------------------------
+;; inferred types
+;;
+;; The walk leaves a call's type as {:call head :arity n} and a var's as
+;; {:var name}: what they are depends on the file's aliases and on other
+;; files. Each file's are first put in terms of fqns ({:fqn f :arity n},
+;; {:var-fqn f}), then resolved across the project: a fn's spec (inferred
+;; from its bodies, or the user's :type-mismatch config, or a core spec)
+;; gives what it returns, a def what it holds.
+
+(defn- normalize-tag [res t]
+  (cond (set? t) (set (map #(normalize-tag res %) t))
+        (and (map? t) (:call t)) {:fqn (res (:call t)) :arity (:arity t)}
+        (and (map? t) (:var t)) {:var-fqn (res (:var t))}
+        :else t))
+
+(defn- normalize-var [res v]
+  (cond-> v
+    (:type-spec v) (update-in [:type-spec :arities]
+                              update-vals (fn [a] (update a :ret #(normalize-tag res %))))
+    (:val-tag v) (update :val-tag #(normalize-tag res %))))
+
+(declare resolve-occurrence ns-analysis)
+
+(defn- normalize-analyses
+  "Each analysis with its vars' types in fqn terms, resolved as its own
+  file reads names."
+  [analyses]
+  (let [raw-by-ns (group-by :ns (mapcat :vars analyses))]
+    (mapv (fn [a]
+            (if (some #(or (:type-spec %) (:val-tag %)) (:vars a))
+              (let [a-res (ns-analysis a raw-by-ns)
+                    res (memoize #(:fqn (resolve-occurrence a-res {} (:ns a) %)))]
+                (update a :vars #(mapv (partial normalize-var res) %)))
+              a))
+          analyses)))
+
+(defn- spec-arity [spec n]
+  (let [as (:arities spec)]
+    (or (get as n)
+        (when-let [v (:varargs as)]
+          (when (>= n (or (:min-arity v) 0)) v)))))
+
+(defn- resolve-tag
+  "A normalized type made concrete. `extra` is the user's specs by fqn;
+  `depth` bounds how far returns are followed (and so ends recursion)."
+  [all-vars extra t depth]
+  (cond
+    (keyword? t) t
+    (set? t) (let [rs (map #(resolve-tag all-vars extra % depth) t)
+                   flat (set (mapcat #(if (set? %) % [%]) rs))]
+               (cond (contains? flat :any) :any
+                     (= 1 (count flat)) (first flat)
+                     :else flat))
+    (not (pos? depth)) :any
+    (:var-fqn t) (if-let [v (get all-vars (:var-fqn t))]
+                   (resolve-tag all-vars extra (or (:val-tag v) :any) (dec depth))
+                   :any)
+    (:fqn t) (let [f (:fqn t)
+                   sp (or (get extra f) (:type-spec (get all-vars f)))]
+               (cond (nil? f) :any
+                     sp (resolve-tag all-vars extra (or (:ret (spec-arity sp (:arity t))) :any) (dec depth))
+                     :else (types/ret-tag {} f (:arity t))))
+    :else :any))
+
+(def ^:private type-depth 6)
+
+(defn- resolve-spec [all-vars extra spec]
+  (when spec
+    (update spec :arities update-vals
+            (fn [a] (update a :ret #(resolve-tag all-vars extra (or % :any) type-depth))))))
+
 (defn- r4 [m prefix r]
   (let [r (or r [1 1 1 1])
         k (fn [s] (keyword (str prefix s)))]
@@ -185,7 +257,7 @@
            (k "row") (nth r 0) (k "col") (nth r 1)
            (k "end-row") (nth r 2) (k "end-col") (nth r 3))))
 
-(defn- var-row [file-id v]
+(defn- var-row [file-id v type-spec]
   (-> {:fqn (:fqn v)
        :ns (:ns v)
        :name (:name v)
@@ -199,6 +271,7 @@
        :fixed-arities (:fixed-arities v)
        :varargs-min-arity (:varargs-min-arity v)
        :macro (= :defmacro (:kind v))
+       :type-spec type-spec
        :defined-by (:defined-by v)}
       (r4 "" (:range v))
       (r4 "name-" (:name-range v))))
@@ -288,10 +361,9 @@
                              (cond-> (assoc occ :fqn (:fqn r) :unresolved unresolved
                                             ;; a nested call's type is what its fn returns
                                             :arg-tags (some->> (:arg-tags occ)
-                                                               (mapv (fn [t]
-                                                                       (if (map? t)
-                                                                         (types/ret-tag (head-fqn (:call t)) (:arity t))
-                                                                         t)))))
+                                                               (mapv #(resolve-tag all-vars (:type-specs *lint*)
+                                                                                   (normalize-tag head-fqn %)
+                                                                                   type-depth))))
                                ;; a hook made it: not written code, so not checked
                                (:generated occ) (assoc :quoted true)
                                ;; :skip-args: calls under these macros are not checked
@@ -348,7 +420,10 @@
           (update :var-def into
                   (->> (:vars a)
                        (filter (fn [v] (identical? (get all-vars (:fqn v)) v)))
-                       (map (partial var-row file-id))))
+                       (map (fn [v]
+                              (var-row file-id v
+                                       (or (get (:type-specs *lint*) (:fqn v))
+                                           (resolve-spec all-vars (:type-specs *lint*) (:type-spec v))))))))
           (update :keyword-def into
                   (for [k (vals (reduce #(if (contains? %1 (:fqn %2)) %1 (assoc %1 (:fqn %2) %2))
                                         {} (filter :def? (:keywords a))))]
@@ -496,7 +571,7 @@
 (defn build-from-analyses
   "Index these analyses. Returns the index."
   [root entries]
-  (let [analyses (analysis-maps entries)
+  (let [analyses (normalize-analyses (analysis-maps entries))
         all-vars (dedupe-vars (mapcat :vars analyses))
         vars-by-ns (group-by :ns (vals all-vars))]
     (first
@@ -504,7 +579,7 @@
                (let [r (file-rows (assoc a :project root) file-id
                                   all-vars vars-by-ns next-local)]
                  [(put-file db file-id (:rows r)) (:next-local r)]))
-             [(empty-db) 0]
+             [(assoc (empty-db) :type-specs (:type-specs *lint*)) 0]
              (map-indexed (fn [i a] [(inc i) a]) analyses)))))
 
 (defmacro ^:private with-lint
@@ -569,7 +644,7 @@
   what their names resolve to."
   [db root path entry]
   (let [cached (assoc (cached-entries root) path entry)
-        analyses (analysis-maps (vals cached))
+        analyses (normalize-analyses (analysis-maps (vals cached)))
         all-vars (dedupe-vars (mapcat :vars analyses))
         vars-by-ns (group-by :ns (vals all-vars))
         a (some #(when (= (:file-path %) path) %) analyses)
