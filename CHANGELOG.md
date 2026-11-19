@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Any `jolt.*` namespace counts as built in. The standalone binary decided by
+  loading the namespace, and it cannot load every Jolt namespace a project's
+  runtime has (`jolt.nrepl`), so `lint` in CI reported them unknown.
+
 ## v0.5.0 - 2026-11-19
 
 - `jolt-lsp lint` checks every project file for a CI gate: findings printed
