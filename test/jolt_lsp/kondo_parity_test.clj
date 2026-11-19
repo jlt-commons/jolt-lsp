@@ -600,3 +600,8 @@
   (let [root (project {"src/p/a.clj" "(ns p.a)\n(defn- f [] 1)\n(def ^:private ^:dynamic *d* 1)\n(defn g [] (f))\n"
                        "src/p/t.clj" "(ns p.t (:require [p.a :as a]))\n(defn t [] (with-redefs [a/f (fn [] 2)] (a/g)) (binding [a/*d* 2] (a/g)))\n"})]
     (is (empty? (filter #(= :private-call (first %)) (diags root "src/p/t.clj"))))))
+
+(deftest lint-as-def-with-extra-args-infers-nothing
+  (let [root (project {"src/pm/a.clj" "(ns pm.a (:refer-clojure :exclude [-]))\n(defmacro vp [n f & more] nil)\n(vp - Prim/sub \"doc\" (fn [x] x))\n(defn g [] (- 1 2))\n"
+                       ".clj-kondo/config.edn" "{:lint-as {pm.a/vp clojure.core/def}}"})]
+    (is (empty? (filter #(#{:invalid-arity :unresolved-symbol} (first %)) (diags root "src/pm/a.clj"))))))

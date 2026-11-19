@@ -15,7 +15,9 @@
   namespaces counted unknown, top-level `alias` calls, scripts with no `ns`
   form (they run in `user`), record constructors from a `:refer :all`
   namespace, `:refer-clojure :exclude` of a special form, and the vars
-  `with-redefs` and `binding` name counted as private calls.
+  `with-redefs` and `binding` name counted as private calls. A macro linted
+  as `def` through `:lint-as` that takes more than a docstring and a value
+  no longer has its last argument read as the var's value.
 - A document opened through a symlink got its diagnostics under the
   canonical path, with the symlinks resolved, because the index keys files
   that way. A client that names documents by the URI it opened them with

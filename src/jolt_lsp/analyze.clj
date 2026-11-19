@@ -771,13 +771,21 @@
            :varargs-min-arity (:varargs-min-arity info))
     entry))
 
+(defn- plain-def?
+  "Whether what follows a def's name is a value, or a docstring and a value.
+  A macro analyzed as def through :lint-as may take more, and then its last
+  form is not the var's value."
+  [after-name]
+  (let [n (count (remove tree/uneval? after-name))]
+    (or (= 1 n) (and (= 2 n) (tree/string-node? (first after-name))))))
+
 (defn- def-arity
   "The arity a definition's var is called with, as far as its form shows:
   a defn's bodies, or the fn a def's value is."
   [h tail after-name]
   (cond
     (#{"defn" "defn-" "defmacro"} h) (some-> tail tail-bodies arity/arity-info)
-    (#{"def" "defonce"} h) (fn-node-arity (last after-name))
+    (#{"def" "defonce"} h) (when (plain-def? after-name) (fn-node-arity (last after-name)))
     :else nil))
 
 (defn- handle-def [node ctx st h]
@@ -810,7 +818,7 @@
                               h private? (tree/node-range node)
                               (tree/node-range (tree/meta-form name-node)))
                    (assoc :deprecated deprecated?)
-                   (cond-> (and (#{"def" "defonce"} h) (seq after-doc)
+                   (cond-> (and (#{"def" "defonce"} h) (seq after-doc) (plain-def? after-name)
                                 (not (fn-node-arity (last after-name)))
                                 ;; a dynamic var is rebound, and (def x nil)
                                 ;; is a placeholder something sets later
