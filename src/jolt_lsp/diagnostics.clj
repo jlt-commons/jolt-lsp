@@ -5,6 +5,8 @@
   :refer (`[app.routes]`, `app.routes`) is a side-effect load and is never
   unused; an alias counts as used by `::alias/kw` keywords too."
   (:require [clojure.string :as string]
+            [jolt-lsp.arity :as arity]
+            [jolt-lsp.core-info :as core-info]
             [jolt-lsp.custom :as custom]
             [jolt-lsp.db :as db]
             [jolt-lsp.kondo :as kondo]
@@ -39,6 +41,32 @@
         :when (and (not (:qualified r)) (:unresolved r) (checked-ref? r))]
     (diag (row-range r) :error :unresolved-symbol
           (str "Unresolved symbol: " (:text r)))))
+
+(defn- var-facts
+  "What the index (or, for a core var, the running Jolt) knows about the
+  var an fqn names, or nil."
+  [var-of fqn]
+  (or (var-of fqn) (core-info/lookup fqn)))
+
+(defn invalid-arity
+  "Calls whose argument count no arity of the called var takes. `var-of`
+  looks a var up by fqn."
+  [refs var-of]
+  (for [r refs
+        :let [n (:arity r)]
+        :when (and n (:fqn r) (checked-ref? r))
+        :let [v (var-facts var-of (:fqn r))
+              info {:fixed-arities (set (:fixed-arities v))
+                    :varargs-min-arity (:varargs-min-arity v)}]
+        :when (and v (arity/known? info) (not (arity/matches? info n)))]
+    (diag (row-range r) :error :invalid-arity
+          (arity/arity-message info (:fqn r) n))))
+
+(defn walk-findings
+  "Findings the analysis walk decided (local calls, recur, overloads)."
+  [findings]
+  (for [f findings]
+    (diag (row-range f) (:severity f) (:code f) (:message f))))
 
 (defn- usage
   "What a file uses: written prefixes, resolved fqns, keyword namespaces."
@@ -123,9 +151,20 @@
                     (or (syntax/explain d) "the file does not read"))
               :problem (:reason d))])))
 
+(defn apply-level
+  "A built-in finding at the level the config gives its code (kondo's
+  `{:linters {:code {:level ...}}}`), or nil when the level is :off."
+  [levels d]
+  (let [level (and (= :jolt-lsp (:source d)) (get levels (:code d)))]
+    (cond
+      (nil? level) d
+      (= :off level) nil
+      :else (assoc d :severity level))))
+
 (defn file-diagnostics
   "Diagnostics for one indexed file. opts: :source (the text, when it is
-  not the file on disk), :kondo, :custom-linters, :clj-depend, :root."
+  not the file on disk), :kondo, :custom-linters, :clj-depend, :root,
+  :levels (a severity, or :off, per code)."
   ([db path] (file-diagnostics db path {}))
   ([db path opts]
    (when-let [file (db/file-by-path db path)]
@@ -141,6 +180,8 @@
        (->> (concat (when source (syntax-errors source))
                     (unresolved-namespace refs)
                     (unresolved-symbol refs)
+                    (invalid-arity refs #(db/var-by-fqn db %))
+                    (walk-findings (db/findings-in-file db fid))
                     (unused-namespaces requires refers u)
                     (unused-refers (filter :refer refs) u)
                     (duplicate-requires requires)
@@ -152,6 +193,7 @@
                       (custom/lint db (:root opts) path opts))
                     (when (:clj-depend opts)
                       (layer/file-diagnostics db path (:clj-depend opts))))
+            (keep #(apply-level (:levels opts) %))
             (map #(assoc % :file path))
             (reduce (fn [m d]
                       (assoc m [(:row d) (:col d) (:code d)] d))

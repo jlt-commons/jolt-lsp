@@ -11,6 +11,7 @@
     :quoted   inside a syntax-quote, resolved when the macro expands
     :inactive inside a reader-conditional branch Jolt does not read"
   (:require [clojure.string :as string]
+            [jolt-lsp.arity :as arity]
             [jolt-lsp.read-impl :as read]
             [jolt-lsp.tree :as tree]))
 
@@ -67,6 +68,7 @@
    :keywords (atom [])
    :locals (atom [])
    :local-refs (atom [])
+   :findings (atom [])
    :local-seq (atom 0)})
 
 (defn- sym-text [node]
@@ -122,11 +124,33 @@
             :range (tree/node-range node)
             :text (tree/text node)})))
 
-(defn- add-occ! [ctx st node in-call?]
+(defn- add-finding!
+  "A finding the walk itself can decide (a local call's arity, recur).
+  Nothing is reported inside a syntax-quote or an inactive branch: that
+  text is not code Jolt runs as written."
+  [ctx st node code severity message]
+  (when-not (or (:syntax-quote ctx) (:inactive ctx))
+    (swap! (:findings st) conj
+           {:range (tree/node-range node)
+            :code code
+            :severity severity
+            :message message})))
+
+(defn- check-local-call! [ctx st node local-id nm n]
+  (when-let [info (get-in ctx [:local-arities local-id])]
+    (when-not (arity/matches? info n)
+      (add-finding! ctx st node :invalid-arity :error (arity/arity-message info nm n)))))
+
+(defn- add-occ!
+  "Record a symbol occurrence. `arity` is the argument count when the
+  symbol is the head of a call."
+  ([ctx st node in-call?] (add-occ! ctx st node in-call? nil))
+  ([ctx st node in-call? arity]
   (let [nm (sym-text node)]
     (when (and nm (not (skip-symbols nm)))
       (if-let [local-id (get (:locals ctx) nm)]
-        (add-local-ref! st local-id node)
+        (do (when arity (check-local-call! ctx st node local-id nm arity))
+            (add-local-ref! st local-id node))
         (let [slash (string/index-of nm "/")
               qualified? (boolean (and slash (> slash 0) (< slash (dec (count nm)))))
               prefix (when qualified? (subs nm 0 slash))
@@ -150,8 +174,9 @@
                   :quoted (boolean (:syntax-quote ctx))
                   :inactive (boolean (:inactive ctx))
                   :heads (:heads ctx)
+                  :arity arity
                   :range r
-                  :name-range name-range}))))))
+                  :name-range name-range})))))))
 
 (defn- add-var!
   "Record a definition, unless it sits in a (comment ...) block."
@@ -359,6 +384,49 @@
       (pos? pending) (recur more (dec pending) acc)
       :else (recur more pending (conj acc c)))))
 
+(defn- params-texts
+  "A params vector's items as text, discarded forms left out."
+  [params]
+  (mapv tree/text (live-children params)))
+
+(defn- tail-bodies
+  "The params of each body of a fn tail (see fn-tail), as text."
+  [{:keys [params arities]}]
+  (if params
+    [(params-texts params)]
+    (vec (keep #(some-> (:params (arity-parts %)) params-texts) arities))))
+
+(defn- percent-names [node]
+  (if (tree/branch? node)
+    (mapcat percent-names (tree/children node))
+    (let [t (sym-text node)]
+      (when (and t (string/starts-with? t "%")) [t]))))
+
+(def ^:private fn-heads #{"fn" "fn*" "clojure.core/fn"})
+
+(defn- fn-node-arity
+  "The arity of a fn form, (fn name? [params] ...) or #(...), else nil."
+  [node]
+  (let [node (some-> node tree/meta-form)]
+    (cond
+      (nil? node) nil
+      (= :fn (tree/tag node)) (arity/fn-literal-arity (percent-names node))
+      (and (= :list (tree/tag node))
+           (contains? fn-heads (some-> (first (tree/children node)) sym-text)))
+      (let [after (rest (tree/children node))
+            after (if (tree/symbol-node? (first after)) (rest after) after)
+            info (arity/arity-info (tail-bodies (fn-tail after)))]
+        (when (arity/known? info) info))
+      :else nil)))
+
+(defn- bind-arity
+  "Note that local `nm`, just bound in ctx, is a fn of this arity."
+  [ctx nm info]
+  (let [id (get-in ctx [:locals nm])]
+    (if (and info id (not= :synthetic id))
+      (assoc-in ctx [:local-arities id] info)
+      ctx)))
+
 (defn- bind-pattern [node ctx st kind scope-range]
   (let [node (some-> node tree/meta-form)]
     (cond
@@ -408,7 +476,11 @@
 (defn- bind-let-vector [vnode ctx st kind scope-range]
   (reduce (fn [ctx [pattern init]]
             (when init (walk-node init ctx st))
-            (bind-pattern pattern ctx st kind scope-range))
+            (let [ctx' (bind-pattern pattern ctx st kind scope-range)
+                  p (some-> pattern tree/meta-form)]
+              (if (and p (tree/symbol-node? p))
+                (bind-arity ctx' (sym-text p) (fn-node-arity init))
+                ctx')))
           ctx
           (partition-all 2 (live-children vnode))))
 
@@ -436,15 +508,48 @@
   body. `kind` is the local kind for the params."
   ([nodes ctx st] (walk-fn-tail nodes ctx st :param))
   ([nodes ctx st kind]
-   (let [{:keys [params body arities]} (fn-tail nodes)]
+   (let [{:keys [params body arities]} (fn-tail nodes)
+         ;; a recur in a method body has `this` to account for; leave it
+         recur-of (fn [params]
+                    (when (and params (not= kind :method-param))
+                      (arity/recur-arity (params-texts params))))
+         ctx (dissoc ctx :seen-recur)]
      (if params
-       (walk-body body (bind-pattern params ctx st kind (tree/node-range params)) st)
-       (doseq [arity arities]
-         (let [{:keys [params body]} (arity-parts arity)
-               pctx (if params
-                      (bind-pattern params ctx st kind (tree/node-range arity))
-                      ctx)]
-           (walk-body body pctx st)))))))
+       (walk-body body (assoc (bind-pattern params ctx st kind (tree/node-range params))
+                              :recur-arity (recur-of params))
+                  st)
+       (let [seen (atom #{})]
+         (doseq [arity arities]
+           (let [{:keys [params body]} (arity-parts arity)
+                 pa (some-> params params-texts arity/param-arity)
+                 pctx (if params
+                        (bind-pattern params ctx st kind (tree/node-range arity))
+                        ctx)]
+             (when (and pa (not (:varargs pa)))
+               (when (contains? @seen (:fixed-arity pa))
+                 (add-finding! ctx st params :conflicting-fn-arity :error
+                               (str "More than one function overload with arity "
+                                    (:fixed-arity pa) ".")))
+               (swap! seen conj (:fixed-arity pa)))
+             (walk-body body (assoc pctx :recur-arity (recur-of params)) st))))))))
+
+(defn- with-arity
+  "Add arity facts to a var entry, when there are any."
+  [entry info]
+  (if (and info (arity/known? info))
+    (assoc entry
+           :fixed-arities (:fixed-arities info)
+           :varargs-min-arity (:varargs-min-arity info))
+    entry))
+
+(defn- def-arity
+  "The arity a definition's var is called with, as far as its form shows:
+  a defn's bodies, or the fn a def's value is."
+  [h tail after-name]
+  (cond
+    (#{"defn" "defn-" "defmacro"} h) (some-> tail tail-bodies arity/arity-info)
+    (#{"def" "defonce"} h) (fn-node-arity (last after-name))
+    :else nil))
 
 (defn- handle-def [node ctx st h]
   (let [cs (tree/children node)
@@ -467,12 +572,13 @@
     (when nm
       (when-not (= h "declare")
         (add-var! ctx st
-               (assoc (var-entry ctx nm kind doc
-                                 (some-> tail arglists-str)
-                                 (param-names (:params tail))
-                                 h private? (tree/node-range node)
-                                 (tree/node-range (tree/meta-form name-node)))
-                      :deprecated deprecated?)))
+               (-> (var-entry ctx nm kind doc
+                              (some-> tail arglists-str)
+                              (param-names (:params tail))
+                              h private? (tree/node-range node)
+                              (tree/node-range (tree/meta-form name-node)))
+                   (assoc :deprecated deprecated?)
+                   (with-arity (def-arity h tail after-name)))))
       (case h
         ("defn" "defn-" "defmacro")
         (walk-fn-tail (drop-while #(= :map (tree/tag %)) after-doc) ctx' st)
@@ -492,11 +598,13 @@
                 mdoc (some #(when (tree/string-node? %) (tree/sexpr %)) (rest mcs))]
             (when mnm
               (add-var! ctx st
-                     (var-entry ctx mnm :protocol-method mdoc
-                                (string/join " " (map #(str "(" (tree/text %) ")") vecs))
-                                (param-names (first vecs))
-                                "defprotocol" false (tree/node-range m)
-                                (tree/node-range mname))))))
+                     (with-arity
+                       (var-entry ctx mnm :protocol-method mdoc
+                                  (string/join " " (map #(str "(" (tree/text %) ")") vecs))
+                                  (param-names (first vecs))
+                                  "defprotocol" false (tree/node-range m)
+                                  (tree/node-range mname))
+                       (arity/arity-info (map params-texts vecs)))))))
 
         ("defrecord" "deftype")
         (let [fields (some #(when (= :vector (tree/tag %)) %) after-name)
@@ -571,7 +679,15 @@
                      st))
 
         (contains? #{"for" "doseq"} h)
-        (walk-body body (bind-for-vector v ctx st (keyword h) scope) st)
+        (walk-body body (bind-for-vector v (dissoc ctx :recur-arity) st (keyword h) scope) st)
+
+        (contains? #{"loop" "loop*"} h)
+        (walk-body body (assoc (bind-let-vector v ctx st (keyword h) scope)
+                               :recur-arity (count (partition-all 2 (live-children v))))
+                   st)
+
+        (= "dotimes" h)
+        (walk-body body (dissoc (bind-let-vector v ctx st (keyword h) scope) :recur-arity) st)
 
         :else
         (walk-body body (bind-let-vector v ctx st (keyword h) scope) st)))))
@@ -583,7 +699,8 @@
         named? (tree/symbol-node? maybe-name)
         nm (when named? (sym-text maybe-name))
         ctx' (if nm
-               (bind-local ctx nm (add-local! st maybe-name :fn (tree/node-range node) false false))
+               (-> (bind-local ctx nm (add-local! st maybe-name :fn (tree/node-range node) false false))
+                   (bind-arity nm (fn-node-arity node)))
                ctx)]
     (walk-fn-tail (if named? (rest after) after) ctx' st)))
 
@@ -596,7 +713,10 @@
                        (let [n (first (tree/children spec))
                              nm (sym-text n)]
                          (if nm
-                           (bind-local c nm (add-local! st n :letfn (tree/node-range node) false false))
+                           (-> (bind-local c nm (add-local! st n :letfn (tree/node-range node) false false))
+                               (bind-arity nm (let [info (arity/arity-info
+                                                          (tail-bodies (fn-tail (rest (tree/children spec)))))]
+                                                (when (arity/known? info) info))))
                            c)))
                      ctx
                      specs)]
@@ -673,13 +793,34 @@
     (walk-body (drop 3 cs) ctx' st)))
 
 (def ^:private threading-heads
-  #{"->" "->>" "some->" "some->>" "cond->" "cond->>"})
+  #{"->" "->>" "some->" "some->>" "cond->" "cond->>" "doto"})
+
+(declare rc-node? splicing? active-branch)
+
+(defn- thread-step!
+  "Walk one threading step: the threaded value is one more argument to it.
+  A reader-conditional step threads into its active branch."
+  [step ctx st]
+  (cond
+    (tree/symbol-node? step) (add-occ! ctx st step true 1)
+    (= :list (tree/tag step)) (walk-node step (assoc ctx :thread-extra 1) st)
+    (and (rc-node? step) (not (splicing? step)))
+    (let [active (active-branch step)]
+      (doseq [[_ v] (partition-all 2 (tree/children (last (tree/children step))))
+              :when v]
+        (if (identical? v active)
+          (thread-step! v ctx st)
+          (walk-node v (assoc ctx :inactive true) st))))
+    :else (walk-node step ctx st)))
 
 (defn- handle-threading
   "A threading macro. An `as->` among its steps has its expr threaded in,
   so its name is the first argument and the body follows."
-  [node ctx st h]
-  (let [[_ expr & steps] (tree/children node)
+  [node ctx st h & [threaded?]]
+  (let [[_ & items] (live-children node)
+        ;; a threading form that is itself a step has its expr threaded in:
+        ;; every item is a step
+        [expr steps] (if threaded? [nil items] [(first items) (rest items)])
         clauses (if (contains? #{"cond->" "cond->>"} h)
                   (partition-all 2 steps)
                   (map vector (repeat nil) steps))]
@@ -695,7 +836,7 @@
                                  (add-local! st nm-node :as-> (tree/node-range step) false false))]
             (add-occ! ctx st (first scs) true)
             (walk-body (drop 2 scs) ctx' st))
-          (when step (walk-node step ctx st)))))))
+          (when step (thread-step! step ctx st)))))))
 
 (def ^:private empty-ns-meta
   {:aliases {} :refers {} :requires [] :require-specs []
@@ -801,18 +942,40 @@
               :else nil)]
     (if sym (assoc ctx :ns sym) ctx)))
 
-(defn- walk-call [node ctx st]
+(def ^:private tail-heads
+  "Core forms walked as plain calls whose arguments can hold a tail call to
+  the enclosing recur target."
+  #{"if" "if-not" "when" "when-not" "cond" "condp" "do" "if-let" "when-let"
+    "if-some" "when-some" "when-first" "locking"})
+
+(defn- check-recur! [node ctx st n]
+  (let [expected (:recur-arity ctx)]
+    (when (and expected (not= expected n))
+      (add-finding! ctx st node :invalid-arity :error
+                    (str "recur argument count mismatch (expected " expected
+                         ", got " n ")")))))
+
+(defn- walk-call
+  "A call: its head is an occurrence with the argument count, `extra`
+  being the arguments a threading macro adds."
+  [node ctx st & [extra]]
   (let [cs (tree/children node)]
     (when (seq cs)
-      (let [head (first cs)]
+      (let [head (first cs)
+            n (+ (or extra 0) (count (rest (live-children node))))]
         (if (tree/symbol-node? head)
-          (add-occ! ctx st head true)
+          (do (when (and (= "recur" (sym-text head)) (not (get (:locals ctx) "recur")))
+                (check-recur! node ctx st n))
+              (add-occ! ctx st head true n))
           (walk-node head ctx st))
         ;; the heads of the calls around an occurrence: if one is a macro,
         ;; its arguments need not be code
-        (let [ctx (if-let [h (sym-text head)]
-                    (update ctx :heads (fnil conj []) h)
-                    ctx)]
+        (let [h (sym-text head)
+              ctx (cond-> ctx
+                    h (update :heads (fnil conj []) h)
+                    ;; a recur in a fn call's args is no tail call, and an
+                    ;; unknown macro (go-loop, say) may be its own target
+                    (not (contains? tail-heads h)) (dissoc :recur-arity))]
           (doseq [n (rest cs)] (walk-node n ctx st)))))))
 
 (defn- head-fqn
@@ -847,7 +1010,11 @@
 
 (defn- walk-list*
   [node ctx st]
-  (let [raw (some-> node (tree/children) first sym-text)
+  (let [extra (:thread-extra ctx)
+        ctx (cond-> (dissoc ctx :thread-extra)
+              ;; a recur in #(...) targets that fn, whose arity we leave
+              (= :fn (tree/tag node)) (dissoc :recur-arity))
+        raw (some-> node (tree/children) first sym-text)
         free? (and raw (not (get (:locals ctx) raw)))
         h (or (when (and free? (seq *lint-as*))
                 (get *lint-as* (head-fqn ctx raw)))
@@ -867,7 +1034,7 @@
       (= h "proxy-super")
       (do (head!) (walk-body (drop 2 (tree/children node)) ctx st))
       (contains? threading-heads h)
-      (do (head!) (handle-threading node ctx st h))
+      (do (head!) (handle-threading node ctx st h (some? extra)))
       (= h "proxy") (do (head!) (handle-proxy ctx st node))
       (= h "reify") (do (head!) (handle-methods ctx st (rest (tree/children node))))
       (contains? #{"extend-type" "extend-protocol"} h)
@@ -881,7 +1048,7 @@
       (contains? #{"." ".."} h) (handle-dot node ctx st h)
       (and h (contains? binding-heads h)) (do (head!) (handle-let node ctx st h))
       (and h (contains? def-kinds h)) (do (head!) (handle-def node ctx st h))
-      :else (walk-call node ctx st))))
+      :else (walk-call node ctx st extra))))
 
 (defn- walk-list
   "Walk a list form. Returns the new ctx for forms that change it (ns,
@@ -1030,7 +1197,7 @@
   [source path]
   (binding [read/*skim-depth* shallow-depth]
     (assoc (analyze* source path)
-           :occurrences [] :keywords [] :locals [] :local-refs [])))
+           :occurrences [] :keywords [] :locals [] :local-refs [] :findings [])))
 
 (defn analyze
   "Parse source and return the analysis map."
@@ -1058,6 +1225,7 @@
      :keywords @(:keywords st)
      :locals @(:locals st)
      :local-refs @(:local-refs st)
+     :findings @(:findings st)
      :parse-ok (:ok parsed)
      :parse-error (:error parsed)}))
 
@@ -1076,5 +1244,6 @@
      :keywords @(:keywords st)
      :locals []
      :local-refs []
+     :findings []
      :parse-ok (:ok parsed)
      :parse-error (:error parsed)}))

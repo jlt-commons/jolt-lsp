@@ -18,6 +18,11 @@
    :clj-depend nil
    :format {}})
 
+(def builtin-skip-arity
+  "Macros whose bodies name the target's fns unqualified, so a name there
+  may shadow a core fn of another arity: writ's laws."
+  #{"writ.spec/law"})
+
 (defn- config-paths [root]
   [(str (fs/path root ".clj-kondo" "config.edn"))
    (str (fs/path root ".jolt-lsp" "config.edn"))])
@@ -45,7 +50,9 @@
   "{:lint-as {\"ns/macro\" \"defn\"}
     :exclude-symbols #{\"sym\" ...}
     :exclude-calls {\"ns/macro\" nil-or-#{\"name\" ...}}
-    :exclude-namespaces #{\"ns\" ...}}
+    :exclude-namespaces #{\"ns\" ...}
+    :skip-arity #{\"ns/macro\" ...}      ; [:linters :invalid-arity :skip-args]
+    :levels {:code :off|:info|:warning|:error}}   ; [:linters <code> :level]
   merged from the kondo and jolt-lsp config files."
   [root]
   (let [cfg (reduce deep-merge {} (keep read-edn (config-paths root)))
@@ -56,4 +63,9 @@
                                    :when (and (seq? x) (symbol? (first x)))]
                                [(str (first x))
                                 (when (vector? (second x)) (set (map str (second x))))]))
-     :exclude-namespaces (set (map str (get-in cfg [:linters :unresolved-namespace :exclude])))}))
+     :exclude-namespaces (set (map str (get-in cfg [:linters :unresolved-namespace :exclude])))
+     :skip-arity (into builtin-skip-arity
+                       (map str (get-in cfg [:linters :invalid-arity :skip-args])))
+     :levels (into {} (for [[code m] (:linters cfg)
+                            :when (and (map? m) (keyword? (:level m)))]
+                        [(keyword code) (:level m)]))}))

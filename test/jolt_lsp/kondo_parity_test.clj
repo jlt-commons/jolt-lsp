@@ -7,7 +7,8 @@
             [clojure.test :refer [deftest is testing]]
             [jolt-lsp.db :as db]
             [jolt-lsp.diagnostics :as diagnostics]
-            [jolt-lsp.query :as query]))
+            [jolt-lsp.query :as query]
+            [jolt-lsp.settings]))
 
 (defn- project
   "A throwaway project with these files ({relative-path text}). Returns the
@@ -64,3 +65,113 @@
     (is (:deprecated (query/hover d "d.a/older")))
     (is (:deprecated (query/hover d "d.a/oldest")))
     (is (not (:deprecated (query/hover d "d.a/fresh"))))))
+
+;; ---------------------------------------------------------------------------
+;; round 2: arity of var calls
+
+(def ^:private arity-a
+  (str "(ns ar.a)\n"
+       "(defn two [x y] (+ x y))\n"
+       "(defn many [x & more] (apply + x more))\n"
+       "(defn multi ([] 0) ([a] a))\n"
+       "(def lit #(+ %1 %2))\n"
+       "(def anon (fn [a] a))\n"
+       "(defmacro mac [a b] `(list ~a ~b))\n"
+       "(defprotocol P (pm [this x]))\n"))
+
+(defn- arity-project [body]
+  (project {"src/ar/a.clj" arity-a
+            "src/ar/b.clj" (str "(ns ar.b (:require [ar.a :as a :refer [two]]))\n" body)}))
+
+(defn- arity-diags [body]
+  (let [root (arity-project body)]
+    (filterv #(= :invalid-arity (first %)) (diags root "src/ar/b.clj"))))
+
+(deftest arity-of-project-vars
+  (is (has? (arity-diags "(two 1)") :invalid-arity "ar.a/two is called with 1 arg but expects 2"))
+  (is (has? (arity-diags "(a/two 1 2 3)") :invalid-arity "with 3 args but expects 2"))
+  (is (has? (arity-diags "(a/many)") :invalid-arity "expects 1 or more"))
+  (is (has? (arity-diags "(a/multi 1 2)") :invalid-arity "expects 0 or 1"))
+  (is (has? (arity-diags "(a/lit 1)") :invalid-arity "expects 2"))
+  (is (has? (arity-diags "(a/anon)") :invalid-arity "expects 1"))
+  (is (has? (arity-diags "(a/mac 1)") :invalid-arity "expects 2"))
+  (is (has? (arity-diags "(a/pm 1 2 3)") :invalid-arity "expects 2"))
+  (testing "matching calls are quiet"
+    (is (empty? (arity-diags "(two 1 2) (a/many 1 2 3) (a/multi) (a/multi 1) (a/lit 1 2) (a/pm 1 2)")))))
+
+(deftest arity-of-core-fns
+  (is (has? (arity-diags "(assoc {} :a)") :invalid-arity "clojure.core/assoc is called with 2 args"))
+  (is (has? (arity-diags "(clojure.string/join)") :invalid-arity "clojure.string/join"))
+  (is (empty? (arity-diags "(assoc {} :a 1) (map inc [1]) (str)"))))
+
+(deftest arity-through-threading
+  (is (has? (arity-diags "(-> 1 (two 2 3))") :invalid-arity "with 3 args"))
+  (is (has? (arity-diags "(->> 1 (two))") :invalid-arity "with 1 arg"))
+  (is (has? (arity-diags "(-> {} (assoc :a))") :invalid-arity "with 2 args"))
+  (is (has? (arity-diags "(-> 1 a/multi a/two)") :invalid-arity "ar.a/two is called with 1 arg"))
+  (is (has? (arity-diags "(doto {} (assoc :a))") :invalid-arity "with 2 args"))
+  (is (has? (arity-diags "(cond-> 1 true (two 1 2))") :invalid-arity "with 3 args"))
+  (is (empty? (arity-diags "(-> 1 (two 2)) (->> 1 (two 2)) (-> 1 inc a/multi) (some-> 1 (two 2)) (doto {} (assoc :a 1))"))))
+
+(deftest arity-is-not-checked-where-calls-are-not-code
+  (is (empty? (arity-diags "(defmacro m [] `(two 1))")))
+  (is (empty? (arity-diags "'(two 1)")))
+  (is (empty? (arity-diags "#?(:cljs (two 1))"))))
+
+;; ---------------------------------------------------------------------------
+;; round 3: local fns and recur
+
+(defn- local-diags [body]
+  (let [root (project {"src/l/a.clj" (str "(ns l.a)\n" body)})]
+    (filterv #(#{:invalid-arity :conflicting-fn-arity} (first %)) (diags root "src/l/a.clj"))))
+
+(deftest arity-of-local-fns
+  (is (has? (local-diags "(let [g (fn [x] x)] (g 1 2))") :invalid-arity "g is called with 2 args but expects 1"))
+  (is (has? (local-diags "(let [g #(inc %)] (g))") :invalid-arity "g is called with 0 args"))
+  (is (has? (local-diags "(letfn [(h [x] x)] (h))") :invalid-arity "h is called with 0 args but expects 1"))
+  (is (has? (local-diags "(fn self [x] (self))") :invalid-arity "self is called with 0 args"))
+  (is (has? (local-diags "(let [g (fn [x] x)] (-> 1 (g 2)))") :invalid-arity "g is called with 2 args"))
+  (testing "a rebinding or a param shadows the local fn"
+    (is (empty? (local-diags "(let [g (fn [x] x) g inc] (g 1))")))
+    (is (empty? (local-diags "(let [g (fn [x] x)] (fn [g] (g 1 2 3)))")))
+    (is (empty? (local-diags "(let [g (fn [x] x)] (g 1))")))))
+
+(deftest recur-arity
+  (is (has? (local-diags "(loop [i 0] (recur 1 2))") :invalid-arity "recur argument count mismatch (expected 1, got 2)"))
+  (is (has? (local-diags "(defn f [a b] (recur 1))") :invalid-arity "expected 2, got 1"))
+  (is (has? (local-diags "(defn f ([a] (recur)) ([a b] a))") :invalid-arity "expected 1, got 0"))
+  (is (empty? (local-diags "(defn f [a & r] (recur 1 nil)) (loop [a 1 b 2] (when a (recur b nil))) (defn g [x] (loop [] (recur)))")))
+  (testing "recur inside a nested fn targets that fn"
+    (is (empty? (local-diags "(defn f [a b] (map (fn [x] (recur x)) [a b]))")))))
+
+(deftest conflicting-fn-arity
+  (is (has? (local-diags "(defn f ([a] a) ([b] b))") :conflicting-fn-arity "More than one function overload with arity 1"))
+  (is (has? (local-diags "(fn ([] 1) ([] 2))") :conflicting-fn-arity "arity 0")))
+
+(deftest threading-forms-as-threading-steps
+  (testing "a threading form that is a step has every item as a step"
+    (is (empty? (arity-diags "(some-> 1 (->> (two 2)))")))
+    (is (empty? (arity-diags "(-> {} (cond-> true (assoc :a 1)) (assoc :b 2))")))
+    (is (has? (arity-diags "(-> 1 (->> (two 2 3)))") :invalid-arity "with 3 args"))))
+
+(deftest recur-in-unknown-forms-is-not-checked
+  (is (empty? (local-diags "(defmacro go-loop [b & body] `(loop ~b ~@body))\n(defn f [a b c] (go-loop [x 1] (recur (inc x))))")))
+  (is (empty? (local-diags "(defn f [a b] (lazy-seq (recur 1)))")))
+  (is (has? (local-diags "(defn f [a b] (if a (recur 1) (when b (recur 2 3))))") :invalid-arity "expected 2, got 1")))
+
+(deftest skip-args-and-levels-config
+  (let [root (project {"src/ar/a.clj" arity-a
+                       "src/ar/b.clj" (str "(ns ar.b (:require [ar.a :as a :refer [two]] [ar.dsl :refer [law]]))\n"
+                                           "(law (two 1))\n(two 1 2 3)\n(defn- unused [] 1)\n")
+                       "src/ar/dsl.clj" "(ns ar.dsl)\n(defmacro law [& body] nil)\n"
+                       ".clj-kondo/config.edn" (str "{:linters {:invalid-arity {:skip-args [ar.dsl/law]}"
+                                                    " :unused-private-var {:level :off}}}")})
+        ds (vec (diagnostics/file-diagnostics (db/build root) (str root "/src/ar/b.clj")
+                                              {:levels (:levels (jolt-lsp.settings/lint-config root))}))]
+    (is (= 1 (count (filter #(= :invalid-arity (:code %)) ds))))
+    (is (= 3 (:row (first (filter #(= :invalid-arity (:code %)) ds)))))
+    (is (not (some #(= :unused-private-var (:code %)) ds)))))
+
+(deftest reader-conditional-threading-step
+  (is (empty? (arity-diags "(->> 1 #?(:clj (two 2)))")))
+  (is (has? (arity-diags "(->> 1 #?(:clj (two 2 3)))") :invalid-arity "with 3 args")))

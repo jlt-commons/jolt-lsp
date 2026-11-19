@@ -49,7 +49,8 @@
 
 (def ^:private tables
   [:file :namespace :ns-alias :ns-require :ns-refer :ns-import :var-def
-   :var-ref :local-def :local-ref :keyword-def :keyword-ref :call-edge :ns-dep])
+   :var-ref :local-def :local-ref :keyword-def :keyword-ref :call-edge :ns-dep
+   :finding])
 
 ;; ---------------------------------------------------------------------------
 ;; analyses and the cache
@@ -171,6 +172,9 @@
        :doc (:doc v)
        :arglists (:arglists v)
        :params (pr-str (or (:params v) []))
+       :fixed-arities (:fixed-arities v)
+       :varargs-min-arity (:varargs-min-arity v)
+       :macro (= :defmacro (:kind v))
        :defined-by (:defined-by v)}
       (r4 "" (:range v))
       (r4 "name-" (:name-range v))))
@@ -184,6 +188,7 @@
        :fqn (:fqn occ)
        :qualified (boolean (:qualified occ))
        :in-call (boolean (:in-call occ))
+       :arity (:arity occ)
        :caller (:caller occ)
        :unresolved (boolean (:unresolved occ))
        :interop (boolean (:interop occ))
@@ -215,7 +220,7 @@
                               v (get all-vars (:fqn r))]
                           (and (= :var (:kind r))
                                (or (nil? v) (= :defmacro (:kind v)))))))
-        {:keys [exclude-symbols exclude-calls exclude-namespaces]} *lint*
+        {:keys [exclude-symbols exclude-calls exclude-namespaces skip-arity]} *lint*
         head-fqn (memoize (fn [h] (:fqn (resolve-occurrence a-res all-vars ns h))))
         excluded? (fn [occ]
                     (or (contains? exclude-symbols (:text occ))
@@ -231,6 +236,10 @@
                            (let [r (resolve-occurrence a-res all-vars ns (:text occ))
                                  unresolved (= :unresolved (:kind r))]
                              (cond-> (assoc occ :fqn (:fqn r) :unresolved unresolved)
+                               ;; :skip-args: calls under these macros are not checked
+                               (and (:arity occ) (seq skip-arity)
+                                    (some #(contains? skip-arity (head-fqn %)) (:heads occ)))
+                               (assoc :arity nil)
                                ;; inside a macro (or a call the index cannot
                                ;; see): its arguments may be data, not code;
                                ;; or the config excludes it, as kondo's does
@@ -311,6 +320,9 @@
                       :let [id (get local-ids (:local-id ref))]
                       :when id]
                   (r4 {:local-id id :file-id file-id :name (:name ref)} "" (:range ref))))
+        (update :finding into
+                (for [f (:findings a)]
+                  (r4 (dissoc f :range) "" (:range f))))
         (update :keyword-ref into
                 (for [k (remove :def? (:keywords a))]
                   (r4 {:fqn (:fqn k) :file-id file-id :notation (:notation k)}
@@ -611,6 +623,7 @@
 (defn local-defs-in-file [db file-id] (in-file db :local-def file-id))
 (defn local-refs-in-file [db file-id] (in-file db :local-ref file-id))
 (defn keyword-defs-in-file [db file-id] (in-file db :keyword-def file-id))
+(defn findings-in-file [db file-id] (in-file db :finding file-id))
 (defn keyword-refs-in-file [db file-id] (in-file db :keyword-ref file-id))
 
 (defn file-by-ns
