@@ -20,6 +20,11 @@
   the args are walked.
 - A `def` or `defn` inside a `(comment ...)` block resolves for the rest of
   that comment. It is still not a project definition.
+- Stacked discards (`#_ #_ a b`) are skipped in every pairing, and map
+  destructuring and `case` clauses skip `#_` too. `as->` is also recognised
+  as `clojure.core/as->` or through an alias.
+- Renaming, hover and go-to-definition on `this` inside a `proxy` method no
+  longer land on the method name: `this` has no declaration of its own.
 
 ## v0.3.2 - 2026-11-16
 

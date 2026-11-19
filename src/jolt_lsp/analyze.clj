@@ -92,7 +92,7 @@
       (and qualified? (class-like? prefix))
       (and (not qualified?) (class-like? nm))))
 
-(declare walk-node walk-list expand-libspec walk-quoted analyze*)
+(declare head-fqn walk-node walk-list expand-libspec walk-quoted analyze*)
 
 (defn- add-local!
   [st node kind scope-range keys-destructuring? destructured? & [nm]]
@@ -114,11 +114,13 @@
   (if id (assoc-in ctx [:locals nm] id) ctx))
 
 (defn- add-local-ref! [st local-id node]
-  (swap! (:local-refs st) conj
+  ;; :synthetic names (proxy's `this`) have no declaration to point at
+  (when-not (= :synthetic local-id)
+   (swap! (:local-refs st) conj
          {:local-id local-id
           :name (sym-text node)
           :range (tree/node-range node)
-          :text (tree/text node)}))
+          :text (tree/text node)})))
 
 (defn- add-occ! [ctx st node in-call?]
   (let [nm (sym-text node)]
@@ -331,6 +333,25 @@
           ctx
           (bind-local ctx nm (add-local! st en kind scope-range true true)))))))
 
+(defn- discard-depth
+  "How many #_ a discarded node stacks: `#_ q` is 1, `#_ #_ q 1` is 2."
+  [n]
+  (loop [n n d 0]
+    (if (tree/uneval? n)
+      (recur (first (tree/children n)) (inc d))
+      d)))
+
+(defn- live-children
+  "Children of a node with #_ discarded forms left out, so they do not
+  shift pairs. A stacked `#_ #_ a b` discards the form after `a` too."
+  [node]
+  (loop [[c & more] (tree/children node) pending 0 acc []]
+    (cond
+      (nil? c) acc
+      (tree/uneval? c) (recur more (+ pending (dec (discard-depth c))) acc)
+      (pos? pending) (recur more (dec pending) acc)
+      :else (recur more pending (conj acc c)))))
+
 (defn- bind-pattern [node ctx st kind scope-range]
   (let [node (some-> node tree/meta-form)]
     (cond
@@ -351,7 +372,7 @@
               (tree/children node))
 
       (= :map (tree/tag node))
-      (let [pairs (partition-all 2 (tree/children node))
+      (let [pairs (partition-all 2 (live-children node))
             ;; :or defaults see the bindings, and may name vars
             ctx' (reduce
                   (fn [ctx [k v]]
@@ -371,17 +392,11 @@
                   pairs)]
         (doseq [[k v] pairs
                 :when (and v (= ":or" (tree/text k)) (= :map (tree/tag v)))
-                [_ default] (partition-all 2 (tree/children v))]
+                [_ default] (partition-all 2 (live-children v))]
           (when default (walk-node default ctx' st)))
         ctx')
 
       :else ctx)))
-
-(defn- live-children
-  "Children of a binding vector with #_ discarded forms left out, so they
-  do not shift the name/value pairs."
-  [vnode]
-  (remove tree/uneval? (tree/children vnode)))
 
 (defn- bind-let-vector [vnode ctx st kind scope-range]
   (reduce (fn [ctx [pattern init]]
@@ -600,15 +615,12 @@
     (doseq [m methods]
       (if (= :list (tree/tag m))
         (let [mcs (tree/children m)
-              scope (tree/node-range m)
-              this-id (when-let [mn (first mcs)]
-                        (add-local! st mn :method-param scope false false "this"))
-              mctx (bind-local ctx "this" this-id)]
+              mctx (bind-local ctx "this" :synthetic)]
           (walk-fn-tail (rest mcs) mctx st :method-param))
         (walk-node m ctx st)))))
 
 (defn- handle-case [node ctx st]
-  (let [[_ expr & clauses] (tree/children node)]
+  (let [[_ expr & clauses] (live-children node)]
     (when expr (walk-node expr ctx st))
     ;; test constants are literals, never evaluated
     (doseq [[test-or-default result] (partition-all 2 clauses)]
@@ -666,7 +678,9 @@
       (when test (walk-node test ctx st))
       (let [scs (when (and step (= :list (tree/tag step))) (tree/children step))
             nm-node (second scs)]
-        (if (and (seq scs) (= "as->" (sym-text (first scs))) (tree/symbol-node? nm-node))
+        (if (and (seq scs) (tree/symbol-node? nm-node)
+                 (when-let [hd (sym-text (first scs))]
+                   (or (= "as->" hd) (= "clojure.core/as->" (head-fqn ctx hd)))))
           (let [ctx' (bind-local ctx (sym-text nm-node)
                                  (add-local! st nm-node :as-> (tree/node-range step) false false))]
             (add-occ! ctx st (first scs) true)

@@ -72,3 +72,17 @@
     (is (contains? ms "Unresolved symbol: mystery"))
     (is (not (contains? ms "Unresolved symbol: k")))
     (is (not (contains? ms "Unresolved symbol: n")))))
+
+(deftest defcfn-through-refer-and-fully-qualified
+  (let [referred (str "(ns app.r (:require [jolt.ffi :refer [defcfn]]))\n"
+                      "(defcfn getuid* \"getuid\" [] :int)\n"
+                      "(defn me [] (getuid*))\n")
+        qualified (str "(ns app.q)\n"
+                       "(jolt.ffi/defcfn getgid* \"getgid\" [] :int)\n"
+                       "(defn me [] (getgid*))\n")
+        root (project! {"src/app/r.clj" referred "src/app/q.clj" qualified})
+        d (db/build root)]
+    (is (db/var-by-fqn d "app.r/getuid*"))
+    (is (db/var-by-fqn d "app.q/getgid*"))
+    (is (not-any? #(re-find #"Unresolved symbol: get" %) (messages d (str root "/src/app/r.clj"))))
+    (is (not-any? #(re-find #"Unresolved symbol: get" %) (messages d (str root "/src/app/q.clj"))))))
