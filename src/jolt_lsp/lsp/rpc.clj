@@ -41,16 +41,30 @@
             (String. (java.util.Arrays/copyOf buf off) "UTF-8")
             (recur (+ off r))))))))
 
-(defn read-message []
+(defn- skip-frame! [why]
+  (binding [*out* *err*]
+    (println (str "jolt-lsp: skipping a malformed frame (" why ")"))
+    (flush)))
+
+(defn read-message
+  "The next message, nil at end of input. A frame with a missing, bad or
+  negative Content-Length, or a body that is not JSON, is skipped with one
+  line on stderr."
+  []
   (let [in *in-stream*]
     (loop [headers {}]
       (let [line (read-header-line in)]
         (cond
           (nil? line) nil
           (string/blank? line)
-          (if-let [n (:content-length headers)]
-            (json/read-json (read-body in (parse-long n)))
-            (recur headers))
+          (let [n (some-> (:content-length headers) parse-long)]
+            (if (and n (>= n 0))
+              (let [msg (try (json/read-json (read-body in n))
+                             (catch Throwable _ ::bad))]
+                (if (= ::bad msg)
+                  (do (skip-frame! "body is not JSON") (recur {}))
+                  msg))
+              (do (skip-frame! "no usable Content-Length") (recur {}))))
           :else
           (let [[k v] (string/split line #":" 2)]
             (recur (assoc headers (keyword (string/lower-case (string/trim k)))

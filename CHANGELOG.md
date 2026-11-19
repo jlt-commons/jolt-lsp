@@ -8,6 +8,8 @@
   as bytes from `System/in`: header lines up to the blank line, then exactly
   Content-Length bytes decoded as UTF-8. MCP mode reads whole lines and is
   unchanged.
+  A frame with a missing, bad or negative Content-Length, or a body that is
+  not JSON, is skipped with one line on stderr instead of ending the server.
 - `jolt.ffi/defcfn` defines a var, so calls to a function declared with it
   (`(ffi/defcfn ^:private unsetenv* "unsetenv" [:string] :int)`, under any
   alias or referred) are no longer reported as unresolved, and go-to-definition

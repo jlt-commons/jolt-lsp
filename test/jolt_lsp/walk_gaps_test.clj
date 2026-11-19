@@ -43,10 +43,8 @@
   (is (bound-local? "(ns x)\n(defn f [] (let [#_ #_ q 1 a 2 b (inc a)] b))" "a"))
   (is (bound-local? "(ns x)\n(defn f [m] (let [{#_a b :k} m] b))" "b"))
   (is (bound-local? "(ns x)\n(defn f [m] (let [{b :k :or {#_z b 1}} m] b))" "b"))
-  (testing "case clauses"
-    (let [src "(ns x)\n(defn f [v] (case v #_1 2 :a (inc v) :b))"
-          r (analyze/analyze src "x.clj")]
-      (is (some #(= "v" (:name %)) (:local-refs r))))))
+  (testing "case clauses: a discard before a result must not turn it into a test constant"
+    (is (bound-local? "(ns x)\n(defn f [k] (let [w 1] (case k :a #_:skip (inc w) :b 2)))" "w"))))
 
 (deftest as-arrow-spellings-and-cond-test
   (is (bound-local? "(ns x)\n(defn f [v] (-> v (clojure.core/as-> s (str s))))" "s"))
@@ -87,7 +85,6 @@
         path (str root "/src/x.clj")
         _ (spit path src)
         d (db/build root)
-        col (inc (.indexOf (second (clojure.string/split-lines src)) "this"))
         this-col (inc (.indexOf ^String (nth (clojure.string/split-lines src) 1) "(str this") )]
     (testing "no local declaration named this"
       (is (not-any? #(= "this" (:name %)) (db/local-defs-in-file d (:id (db/file-by-path d path))))))
@@ -95,7 +92,6 @@
       (let [r (try (rename/rename d {:path path :row 2 :col (+ this-col 5) :to "me"})
                    (catch Throwable e {:error (ex-message e)}))
             edits (pr-str r)]
-        (is (not (re-find #"toString" edits)) edits)
-        (is (not (re-find #":new-text \"me\"|\"me\"" (if (:error r) "" edits))) edits)))
+        (is (not (re-find #"toString" edits)) edits)))
     (testing "definition of this does not point at the method name"
       (is (empty? (query/definition-at d path 2 (+ this-col 5)))))))

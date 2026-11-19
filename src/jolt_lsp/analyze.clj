@@ -116,11 +116,11 @@
 (defn- add-local-ref! [st local-id node]
   ;; :synthetic names (proxy's `this`) have no declaration to point at
   (when-not (= :synthetic local-id)
-   (swap! (:local-refs st) conj
-         {:local-id local-id
-          :name (sym-text node)
-          :range (tree/node-range node)
-          :text (tree/text node)})))
+    (swap! (:local-refs st) conj
+           {:local-id local-id
+            :name (sym-text node)
+            :range (tree/node-range node)
+            :text (tree/text node)})))
 
 (defn- add-occ! [ctx st node in-call?]
   (let [nm (sym-text node)]

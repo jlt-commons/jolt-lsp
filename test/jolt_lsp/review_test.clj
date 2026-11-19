@@ -177,6 +177,17 @@
   (let [[a] (read-frames (str "content-length: 2\r\nContent-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n{}") 1)]
     (is (= {} a))))
 
+(deftest lsp-reader-skips-malformed-frames
+  (let [good "Content-Length: 2\r\n\r\n{}"]
+    (testing "missing, non-numeric and negative Content-Length"
+      (is (= [{} nil] (read-frames (str "X-Other: 1\r\n\r\n" good) 2)))
+      (is (= [{} nil] (read-frames (str "Content-Length: abc\r\n\r\n" good) 2)))
+      (is (= [{} nil] (read-frames (str "Content-Length: -5\r\n\r\n" good) 2))))
+    (testing "a body that is not JSON"
+      (is (= [{} nil] (read-frames (str "Content-Length: 5\r\n\r\n{oops" good) 2))))
+    (testing "only bad input ends in nil"
+      (is (= [nil] (read-frames "Content-Length: abc\r\n\r\n" 1))))))
+
 (deftest lsp-reader-survives-short-reads
   ;; a stream that hands out at most 3 bytes per bulk read, as a pipe may
   (let [bs (.getBytes "Content-Length: 22\r\n\r\n{\"id\":1,\"method\":\"ab\"}" "UTF-8")
