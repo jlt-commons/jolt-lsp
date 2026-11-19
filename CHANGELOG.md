@@ -9,6 +9,14 @@
   computed for instead of waiting for a push before sending the next change.
   A document that isn't open gets a push without `version`, and `didClose`
   forgets it.
+- A request sent before `initialize` now gets the error LSP asks for,
+  `-32002` (server not initialized), instead of an answer. A notification
+  sent that early is dropped, and `exit` still works at any time.
+- The server asks to watch `.clj`, `.cljc` and `.edn` files through
+  `client/registerCapability` only when the client's `initialize` request
+  sets `workspace.didChangeWatchedFiles.dynamicRegistration` to true. Before,
+  it asked every client. Without the registration, the index still picks up
+  files changed, added or deleted on disk the next time it's used.
 
 ## v0.3.3 - 2026-11-19
 

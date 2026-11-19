@@ -353,7 +353,9 @@
       (swap! api/state update :db #(db/delete-file % (root) path))
       (api/refresh-file! (root) path))))
 
-(defn- handle [msg]
+(defn- dispatch
+  "Answer one message from an initialized client."
+  [msg]
   (let [method (:method msg)
         id (:id msg)
         params (:params msg)
@@ -363,6 +365,7 @@
       (let [uri (or (:rootUri params) (get-in params [:workspaceFolders 0 :uri]))
             root (or (some-> uri paths/uri->path) (System/getProperty "user.dir"))]
         (api/ensure-db root)
+        (swap! state assoc :initialized? true :client-capabilities (:capabilities params))
         (respond {:capabilities
                   {:textDocumentSync {:openClose true :change 1 :save true}
                    :definitionProvider true
@@ -385,11 +388,13 @@
                    :documentFormattingProvider true}
                   :serverInfo {:name "jolt-lsp" :version version/version}}))
 
+      ;; dynamic registration only for a client that says it supports it
       "initialized"
-      (rpc/request "client/registerCapability"
-                   {:registrations [{:id "jolt-lsp-watch"
-                                     :method "workspace/didChangeWatchedFiles"
-                                     :registerOptions {:watchers [{:globPattern "**/*.{clj,cljc,edn}"}]}}]})
+      (when (get-in @state [:client-capabilities :workspace :didChangeWatchedFiles :dynamicRegistration])
+        (rpc/request "client/registerCapability"
+                     {:registrations [{:id "jolt-lsp-watch"
+                                       :method "workspace/didChangeWatchedFiles"
+                                       :registerOptions {:watchers [{:globPattern "**/*.{clj,cljc,edn}"}]}}]}))
 
       "textDocument/didOpen"
       (let [path (doc-path params)
@@ -450,6 +455,17 @@
       ;; responses to our own requests carry no method
       nil nil
       (when id (rpc/respond-error id -32601 (str "unknown method " method))))))
+
+(defn- handle
+  "Answer one message. Before initialize a request gets ServerNotInitialized
+  and a notification is dropped; exit, and responses to our own requests,
+  go through (LSP 3.17)."
+  [msg]
+  (let [method (:method msg)]
+    (if (or (:initialized? @state) (nil? method) (contains? #{"initialize" "exit"} method))
+      (dispatch msg)
+      (when-let [id (:id msg)]
+        (rpc/respond-error id -32002 "server not initialized")))))
 
 (defn -main [& _]
   (loop []
