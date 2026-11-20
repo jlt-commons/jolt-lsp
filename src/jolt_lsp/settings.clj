@@ -30,6 +30,30 @@
   #{"writ.spec/law" "writ.spec/calls" "writ.spec/ann" "writ.spec/graph"
     "writ.spec/refine"})
 
+(def discouraged-presets
+  "Named rule sets for the :discouraged-var linter, opted into with
+  `{:linters {:discouraged-var {:presets [:security]}}}`. :security bans
+  the core vars that evaluate or load code, or read with the full reader,
+  the usual remote-code-execution footholds on untrusted input. Adapted
+  from clojure-agent-starter's clj-kondo config (MIT, JoinIn AI)."
+  {:security
+   {"clojure.core/read-string" {:level :error :message "read-string reads with the full reader (#=, tagged literals); use clojure.edn/read-string for data"}
+    "clojure.core/read" {:level :error :message "read reads with the full reader (#=, tagged literals); use clojure.edn/read for data"}
+    "clojure.core/eval" {:level :error :message "eval on constructed data is a remote-code-execution foothold; if it is needed, exempt the namespace with :config-in-ns"}
+    "clojure.core/load-string" {:level :error :message "load-string evaluates arbitrary code; use clojure.edn/read-string for data"}
+    "clojure.core/load-reader" {:level :error :message "load-reader evaluates arbitrary code from a stream"}
+    "clojure.core/load-file" {:level :error :message "load-file executes code from a path; path injection becomes code execution"}
+    "clojure.xml/parse" {:level :error :message "clojure.xml/parse may resolve external entities (XXE); parse untrusted XML with external entities disabled"}}})
+
+(defn- discouraged-vars
+  "The :discouraged-var linter map as {\"ns/name\" {:message :level}}, with
+  its :presets expanded under the vars it names itself."
+  [m]
+  (when (map? m)
+    (merge (apply merge (map discouraged-presets (:presets m)))
+           (into {} (for [[k v] m :when (symbol? k)]
+                      [(str k) (if (map? v) v {})])))))
+
 (defn- config-paths [root]
   [(str (fs/path root ".clj-kondo" "config.edn"))
    (str (fs/path root ".jolt-lsp" "config.edn"))])
@@ -153,11 +177,21 @@
      :skip-arity (set (map str (get-in cfg [:linters :invalid-arity :skip-args])))
      :dsl-heads dsl-heads
      :levels (into {} (for [[code m] (:linters cfg)
-                            :when (and (map? m) (keyword? (:level m)))]
+                            :when (and (map? m) (keyword? (:level m))
+                                       (not= :discouraged-var (keyword code)))]
                         [(keyword code) (:level m)]))
      ;; {"ns/name" {:arities {n {:args [...] :ret t}}}}: clj-kondo's
      ;; [:linters :type-mismatch :namespaces]
      :type-specs (into {} (for [[nsn fns] (get-in cfg [:linters :type-mismatch :namespaces])
                                 [nm spec] fns]
                             [(str nsn "/" nm) spec]))
+     ;; {:vars {"ns/name" {:message :level}} :level default
+     ;;  :in-ns {"ns" {"ns/name" {...}}}}: [:linters :discouraged-var], and
+     ;; [:config-in-ns <ns> :linters :discouraged-var] per namespace
+     :discouraged {:vars (discouraged-vars (get-in cfg [:linters :discouraged-var]))
+                   :level (get-in cfg [:linters :discouraged-var :level])
+                   :in-ns (into {} (for [[nsn c] (:config-in-ns cfg)
+                                         :let [m (discouraged-vars (get-in c [:linters :discouraged-var]))]
+                                         :when (seq m)]
+                                     [(str nsn) m]))}
      :hooks (hooks-config root cfg dirs)})))

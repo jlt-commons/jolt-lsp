@@ -55,3 +55,8 @@ check), src/jolt_lsp/pure.clj (the side-effect-free core fns) and
 src/jolt_lsp/analyze.clj (format-arg-count, after analyze-format-string).
 src/jolt_lsp/types/clojure_core.clj, clojure_string.clj and clojure_set.clj
 are clj-kondo's type specs, copied with only the namespace changed.
+
+The :security preset of the :discouraged-var linter (jolt-lsp.settings) is
+adapted from clojure-agent-starter's clj-kondo config, Copyright (c) 2026
+JoinIn AI, Inc., under the MIT License; see
+docs/third-party/clojure-agent-starter-LICENSE.

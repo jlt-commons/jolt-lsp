@@ -133,6 +133,22 @@
       (diag (row-range r) :info :aliased-referred-var
             (str "Var " (:name r) " is referred but used via alias: " (:prefix r))))))
 
+(defn discouraged-var
+  "Uses of a var the :discouraged-var config lists. `config` is
+  {:vars {fqn {:message :level}} :level default :in-ns {ns {fqn {...}}}};
+  `nsn` is the file's namespace, whose :in-ns entries override per var.
+  A var's level wins over the linter's, which defaults to :warning."
+  [refs config nsn]
+  (let [vars (merge-with merge (:vars config) (get (:in-ns config) nsn))
+        default (or (:level config) :warning)]
+    (when (and (seq vars) (not= :off default))
+      (for [r refs
+            :let [v (some->> (:fqn r) (get vars))
+                  level (or (:level v) default)]
+            :when (and v (checked-ref? r) (not= :off level))]
+        (diag (row-range r) level :discouraged-var
+              (or (:message v) (str "Discouraged var: " (:fqn r))))))))
+
 (defn walk-findings
   "Findings the analysis walk decided (local calls, recur, overloads)."
   [findings]
@@ -247,7 +263,7 @@
 (defn file-diagnostics
   "Diagnostics for one indexed file. opts: :source (the text, when it is
   not the file on disk), :custom-linters, :clj-depend, :root,
-  :levels (a severity, or :off, per code)."
+  :levels (a severity, or :off, per code), :discouraged (see discouraged-var)."
   ([db path] (file-diagnostics db path {}))
   ([db path opts]
    (when-let [file (db/file-by-path db path)]
@@ -270,6 +286,7 @@
                     (deprecated-var refs var-of)
                     (type-mismatch refs (:type-specs db) var-of)
                     (aliased-referred-var refs)
+                    (discouraged-var refs (:discouraged opts) (some-> (:ns file) str))
                     (walk-findings (db/findings-in-file db fid))
                     (unused-namespaces requires refers u)
                     (unused-refers (filter :refer refs) u)

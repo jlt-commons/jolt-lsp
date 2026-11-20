@@ -610,3 +610,52 @@
   ;; the binary cannot load every jolt.* namespace a project's runtime has
   (is (empty? (filter #(= :unresolved-namespace (first %))
                       (local-diags* "(defn f [] (jolt.not-in-this-process/start))")))))
+
+;; ---------------------------------------------------------------------------
+;; discouraged-var
+
+(defn- api-diags
+  "[code message severity] triples for one file, through the api so the
+  project's config is read."
+  [root rel]
+  (->> (jolt-lsp.api/diagnostics* root {:file rel})
+       (filterv #(= :discouraged-var (:code %)))
+       (mapv (juxt :code :message :severity :row))))
+
+(deftest discouraged-var-from-kondo-config
+  (let [root (project {"src/dv/a.clj" "(ns dv.a (:require [clojure.string :as s :refer [join]]))\n(defn f [x] (eval x))\n(defn g [] (s/join [1]) (join [2]))\n(defn h [] (str 'eval))\n"
+                       ".clj-kondo/config.edn" (str "{:linters {:discouraged-var {clojure.core/eval {:message \"no eval\"}"
+                                                    " clojure.string/join {:message \"no join\" :level :error}}}}")})
+        ds (api-diags root "src/dv/a.clj")]
+    (testing "a use of a listed var is flagged with its message, warning by default"
+      (is (some #(= [:discouraged-var "no eval" :warning 2] %) ds)))
+    (testing "per-var level, aliased and referred uses, but not the refer site or a quoted symbol"
+      (is (= 2 (count (filter #(= "no join" (second %)) ds))))
+      (is (every? #(and (= :error (nth % 2)) (= 3 (nth % 3))) (filter #(= "no join" (second %)) ds)))
+      (is (= 3 (count ds))))))
+
+(deftest discouraged-var-linter-level-and-default-message
+  (let [root (project {"src/dv/b.clj" "(ns dv.b)\n(defn f [x] (eval x))\n"
+                       ".clj-kondo/config.edn" "{:linters {:discouraged-var {:level :error clojure.core/eval {}}}}"})]
+    (is (= [[:discouraged-var "Discouraged var: clojure.core/eval" :error 2]]
+           (api-diags root "src/dv/b.clj")))))
+
+(deftest discouraged-var-config-in-ns-exempts
+  (let [root (project {"src/dv/c.clj" "(ns dv.c)\n(defn f [x] (eval x))\n"
+                       "src/dv/d.clj" "(ns dv.d)\n(defn f [x] (eval x))\n"
+                       ".clj-kondo/config.edn" (str "{:linters {:discouraged-var {clojure.core/eval {:message \"no eval\"}}}"
+                                                    " :config-in-ns {dv.c {:linters {:discouraged-var {clojure.core/eval {:level :off}}}}}}")})]
+    (is (empty? (api-diags root "src/dv/c.clj")))
+    (is (= 1 (count (api-diags root "src/dv/d.clj"))))))
+
+(deftest discouraged-var-security-preset
+  (let [root (project {"src/dv/e.clj" "(ns dv.e)\n(defn f [x] (read-string x) (load-string x))\n(defn g [x] (clojure.edn/read-string x))\n"
+                       ".jolt-lsp/config.edn" "{:linters {:discouraged-var {:presets [:security]}}}"})
+        ds (api-diags root "src/dv/e.clj")]
+    (is (= 2 (count ds)))
+    (is (every? #(= :error (nth % 2)) ds))
+    (is (some #(string/includes? (second %) "clojure.edn/read-string") ds))))
+
+(deftest no-discouraged-var-without-config
+  (let [root (project {"src/dv/f.clj" "(ns dv.f)\n(defn f [x] (eval x))\n"})]
+    (is (empty? (api-diags root "src/dv/f.clj")))))
