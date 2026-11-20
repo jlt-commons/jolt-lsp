@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.6.0 - 2026-11-20
 
 - clj-kondo's `:discouraged-var` linter: uses of the vars listed under
   `{:linters {:discouraged-var {ns/var {:message "..."}}}}` are flagged,
@@ -8,6 +8,10 @@
   namespace can change or turn off entries with `:config-in-ns`. An opt-in
   `:presets [:security]` bans `read-string`, `read`, `eval`, `load-string`,
   `load-reader`, `load-file` and `clojure.xml/parse`.
+- Renaming a local bound by `{:keys [a] :or {a 1}}` renames the `:or` key
+  too, and references list it. The default used to stay under the old name,
+  so the renamed binding lost it. A binding named only in `:or` is still
+  reported unused, as clj-kondo does.
 
 ## v0.5.1 - 2026-11-19
 
