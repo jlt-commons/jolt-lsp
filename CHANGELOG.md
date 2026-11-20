@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- clj-kondo's `:discouraged-var` linter: uses of the vars listed under
+  `{:linters {:discouraged-var {ns/var {:message "..."}}}}` are flagged,
+  warning by default, with the linter's or a var's own `:level`. A
+  namespace can change or turn off entries with `:config-in-ns`. An opt-in
+  `:presets [:security]` bans `read-string`, `read`, `eval`, `load-string`,
+  `load-reader`, `load-file` and `clojure.xml/parse`.
+
 ## v0.5.1 - 2026-11-19
 
 - The optional clj-kondo bridge is gone: jolt-lsp no longer shells out to a

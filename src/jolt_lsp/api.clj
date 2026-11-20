@@ -231,12 +231,14 @@
     (query/document-symbols d (resolve-path root (:file opts)))))
 
 (defn- diag-opts [root opts]
-  (let [cfg (settings/load-settings (root-for root))]
+  (let [cfg (settings/load-settings (root-for root))
+        lint (settings/lint-config (root-for root))]
     {:root (root-for root)
      :source (:source opts)
      :custom-linters (:custom-linters cfg)
      :clj-depend (:clj-depend cfg)
-     :levels (:levels (settings/lint-config (root-for root)))}))
+     :levels (:levels lint)
+     :discouraged (:discouraged lint)}))
 
 (defn diagnostics* [root opts]
   (let [d (ensure-db root)

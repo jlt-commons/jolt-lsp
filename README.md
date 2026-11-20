@@ -77,6 +77,21 @@ in `.clj-kondo/config.edn` is read too. Linter levels, `:lint-as`, hooks and
 the rest of the lint config come from `.clj-kondo/config.edn` and
 `.jolt-lsp/config.edn`.
 
+Vars a project should not use go under clj-kondo's `:discouraged-var`
+linter. `:presets [:security]` adds a rule set for the core vars that
+evaluate or load code (`eval`, `read-string`, `load-file` and the rest), at
+`:error`; exempt a namespace that needs one with `:config-in-ns`:
+
+```clojure
+;; .jolt-lsp/config.edn or .clj-kondo/config.edn
+{:linters {:discouraged-var {:presets [:security]
+                             my.app/legacy-fn {:message "use my.app/new-fn"}}}
+ :config-in-ns {my.app.repl {:linters {:discouraged-var {clojure.core/eval {:level :off}}}}}}
+```
+
+clj-kondo itself does not know `:presets`, so put that key in
+`.jolt-lsp/config.edn` when both tools read the project.
+
 In GitHub Actions, the repository is also an action that downloads the
 release binary for the runner and runs `lint`:
 
