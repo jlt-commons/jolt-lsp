@@ -96,7 +96,7 @@ In GitHub Actions, the repository is also an action that downloads the
 release binary for the runner and runs `lint`:
 
 ```yaml
-      - uses: jlt-commons/jolt-lsp@v0.5.1
+      - uses: jlt-commons/jolt-lsp@v0.6.0
         with:
           fail-level: error              # the default
           args: --exclude ^vendor/       # optional
@@ -216,7 +216,7 @@ Each release on the
 [Releases page](https://github.com/jlt-commons/jolt-lsp/releases) carries
 standalone binaries for macOS (arm64) and Linux (x86_64), so nothing else
 needs to be installed. CI pins one through the action
-(`uses: jlt-commons/jolt-lsp@v0.5.1`, see [Lint and CI](#lint-and-ci)).
+(`uses: jlt-commons/jolt-lsp@v0.6.0`, see [Lint and CI](#lint-and-ci)).
 
 Projects that use jolt-lsp as a library pin a tag and its commit, so a merge
 to `main` doesn't move them:
