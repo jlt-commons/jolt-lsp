@@ -131,14 +131,18 @@
 (defn- bind-local [ctx nm id]
   (if id (assoc-in ctx [:locals nm] id) ctx))
 
-(defn- add-local-ref! [st local-id node]
-  ;; :synthetic names (proxy's `this`) have no declaration to point at
-  (when-not (= :synthetic local-id)
-    (swap! (:local-refs st) conj
-           {:local-id local-id
-            :name (sym-text node)
-            :range (tree/node-range node)
-            :text (tree/text node)})))
+(defn- add-local-ref!
+  ;; :synthetic names (proxy's `this`) have no declaration to point at.
+  ;; default? marks an :or key: it names the local, but is not a use of it.
+  ([st local-id node] (add-local-ref! st local-id node false))
+  ([st local-id node default?]
+   (when-not (= :synthetic local-id)
+     (swap! (:local-refs st) conj
+            (cond-> {:local-id local-id
+                     :name (sym-text node)
+                     :range (tree/node-range node)
+                     :text (tree/text node)}
+              default? (assoc :default true))))))
 
 (defn- add-finding!
   "A finding the walk itself can decide (a local call's arity, recur).
@@ -624,7 +628,9 @@
                   pairs)]
         (doseq [[k v] pairs
                 :when (and v (= ":or" (tree/text k)) (= :map (tree/tag v)))
-                [_ default] (partition-all 2 (live-children v))]
+                [dk default] (partition-all 2 (live-children v))]
+          (when-let [id (and (tree/symbol-node? dk) (get-in ctx' [:locals (sym-text dk)]))]
+            (add-local-ref! st id dk true))
           (when default (walk-node default ctx' st)))
         ctx')
 

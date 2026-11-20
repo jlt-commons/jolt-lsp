@@ -209,7 +209,8 @@
   #{:field :fn :letfn :method-param :catch :comment-def})
 
 (defn unused-bindings [locals local-refs]
-  (let [used (set (map :local-id local-refs))]
+  ;; an :or key names its local without using it
+  (let [used (set (map :local-id (remove :default local-refs)))]
     (for [l locals
           :when (and (not (contains? used (:id l)))
                      (not (quiet-local-kinds (:kind l)))

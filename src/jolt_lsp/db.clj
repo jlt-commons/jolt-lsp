@@ -462,7 +462,9 @@
                 (for [ref (:local-refs a)
                       :let [id (get local-ids (:local-id ref))]
                       :when id]
-                  (r4 {:local-id id :file-id file-id :name (:name ref)} "" (:range ref))))
+                  (r4 (cond-> {:local-id id :file-id file-id :name (:name ref)}
+                        (:default ref) (assoc :default true))
+                      "" (:range ref))))
         (update :finding into
                 (for [f (:findings a)]
                   (r4 (dissoc f :range) "" (:range f))))
