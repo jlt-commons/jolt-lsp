@@ -659,3 +659,15 @@
 (deftest no-discouraged-var-without-config
   (let [root (project {"src/dv/f.clj" "(ns dv.f)\n(defn f [x] (eval x))\n"})]
     (is (empty? (api-diags root "src/dv/f.clj")))))
+
+(deftest or-default-keys-are-uses-of-their-binding
+  ;; {:keys [a] :or {a 1}}: the :or key names the local, so renaming the
+  ;; local renames it too, but it is not a USE — a binding named only there
+  ;; is still unused, as in clj-kondo.
+  (let [root (project {"src/od/a.clj" "(ns od.a)\n(defn f [{:keys [a] :or {a 1}}] (inc a))\n"})
+        r (jolt-lsp.api/rename* root {:path "src/od/a.clj" :row 2 :col 18 :to "b"})]
+    (is (:ok r) (pr-str r))
+    (is (= #{[2 18] [2 26] [2 38]}
+           (set (map (juxt :start-row :start-col) (val (first (:edits r))))))))
+  (is (seq (only :unused-binding "(defn f [{:keys [a] :or {a 1}}] nil)")))
+  (is (empty? (only :unused-binding "(defn f [{:keys [a] :or {a 1}}] a)"))))
