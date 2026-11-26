@@ -146,11 +146,11 @@
 (defn- dependency-closure [model requested destination]
   (let [deps (dependency-map model)
         destination-ordinal (:ordinal destination)]
-    (loop [queue [requested]
+    (loop [queue (conj clojure.lang.PersistentQueue/EMPTY requested)
            selected #{requested}]
       (if (empty? queue)
         {:selected selected}
-        (let [current (first queue)
+        (let [current (peek queue)
               candidates (->> (get deps current #{})
                               (remove selected)
                               (remove #(dependency-satisfied-at?
@@ -164,7 +164,7 @@
              :error-type :ambiguous-dependency
              :dependency ambiguous
              :match-count (count (get-in model [:by-name ambiguous]))}
-            (recur (into (vec (rest queue)) candidates)
+            (recur (into (pop queue) candidates)
                    (into selected candidates))))))))
 
 (defn- stable-topological-order [model selected]
@@ -182,7 +182,8 @@
                          (for [[name dependencies] selected-deps
                                :when (empty? dependencies)]
                            name))]
-    (loop [ready (vec initial)
+    (loop [ready (into clojure.lang.PersistentQueue/EMPTY initial)
+           queued (set initial)
            remaining-deps selected-deps
            result []]
       (if (empty? ready)
@@ -194,16 +195,16 @@
                        (remove (set result))
                        (sort-by order-key)
                        vec)})
-        (let [current (first ready)
+        (let [current (peek ready)
               dependents (get reverse-deps current #{})
               next-deps (reduce #(update %1 %2 disj current)
                                 remaining-deps dependents)
               newly-ready (->> dependents
                                (filter #(and (empty? (get next-deps %))
-                                             (not (some #{%} ready))
-                                             (not (some #{%} result))))
+                                             (not (queued %))))
                                (sort-by order-key))]
-          (recur (into (vec (rest ready)) newly-ready)
+          (recur (into (pop ready) newly-ready)
+                 (into queued newly-ready)
                  next-deps
                  (conj result current)))))))
 

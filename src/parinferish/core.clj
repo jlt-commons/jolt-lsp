@@ -6,15 +6,21 @@
 ;; (README, "Licensing"), which is redistributable on any terms including this
 ;; tree's GPL-3.0-or-later.
 ;;
-;; Taken verbatim but for ONE line. The changes are the extension (.cljc ->
-;; .clj: nothing in samizdat's src/ is cljc, and the file has no reader
-;; conditionals to strip), this header, and `count-last-line` passing "\n"
+;; Taken verbatim but for ONE line and the tokenizer's speed (below). The
+;; changes are the extension (.cljc -> .clj: nothing in samizdat's src/ is
+;; cljc, and the file has no reader conditionals to strip), this header, and `count-last-line` passing "\n"
 ;; instead of \newline to clojure.string/last-index-of — marked inline as a
 ;; PORT CHANGE. Jolt's last-index-of takes a string needle where the JVM's
 ;; also accepts a char, and that line is reached by any multi-line string
 ;; token, so unported it threw out of `parse` on precisely the truncated
 ;; input this is here to repair. There is no other interop in the file: it
 ;; needs clojure.string, volatile! and regex literals, all of which Jolt has.
+;;
+;; SPEED CHANGE (jolt-lsp): `parse` walked the input by cutting off each token
+;; and matching the regexes against the whole rest, and `parse-string` built a
+;; string literal a character at a time, so both copied the input once per
+;; token or character: 10s for a 400KB file.  `match-at` matches a window at an
+;; index and `parse-string` scans in place; the tokens are the same.
 ;;
 ;; WHY IT IS HERE. samizdat's own repair (samizdat.lisp/balance) works from
 ;; the DELIMITER STACK: it can append the closers a trailing truncation is
@@ -337,19 +343,44 @@
       :else
       token-data)))
 
-(defn- parse-string [token input-str]
-  (loop [token token
-         input-str (subs input-str (count token))]
-    (if-let [ch (first input-str)]
-      (case ch
-        \\
-        (if (> (count input-str) 1)
-          (recur (str token (subs input-str 0 2)) (subs input-str 2))
-          (str token ch))
-        \"
-        (str token ch)
-        (recur (str token ch) (subs input-str 1)))
-      token)))
+(defn- parse-string
+  "The string literal starting at index start of input: up to its closing quote,
+  escapes skipped, or to the end when there is none.  Scans in place and cuts
+  once; building it a character at a time copied it every step."
+  [input start]
+  (let [n (count input)
+        end (loop [i (inc start)]
+              (if (< i n)
+                (case (nth input i)
+                  \\ (if (< (inc i) n) (recur (+ i 2)) n)
+                  \" (inc i)
+                  (recur (inc i)))
+                n))]
+    (subs input start end)))
+
+(def ^:private window
+  "How much of the input the token regexes see at once."
+  256)
+
+(defn- match-at
+  "The first token regex's match at index i of input, as [group-name match].
+  The regexes are anchored and greedy, so a match that ends inside the window
+  is the one the whole rest would give; only one that reaches the window's end
+  is tried again on the whole rest.  Matching the rest every time copied it for
+  every token."
+  [input i]
+  (let [n (count input)
+        w (min n (+ i window))
+        part (subs input i w)
+        found (fn [text]
+                (some (fn [[group-name regex]]
+                        (when-let [match (re-find regex text)]
+                          [group-name match]))
+                      regexes))
+        hit (found part)]
+    (if (and (< w n) (or (nil? hit) (= (count (second hit)) (- w i))))
+      (found (subs input i))
+      hit)))
 
 (defn parse
   "Returns a hierarcichal (I can never spell that goddamn word) vector of tuples
@@ -368,19 +399,15 @@
          *line (volatile! 0)
          *column (volatile! 0)
          *indent (volatile! 0)
-         tokens (loop [input-str input
+         tokens (loop [i 0
                        tokens (transient [])
                        last-token nil]
-                  (if-let [[group-name token]
-                           (some (fn [[group-name regex]]
-                                   (when-let [match (re-find regex input-str)]
-                                     [group-name match]))
-                                 regexes)]
+                  (if-let [[group-name token] (when (< i (count input)) (match-at input i))]
                     (let [token (if (= group-name :string)
-                                  (parse-string token input-str)
+                                  (parse-string input i)
                                   token)
                           token-data (read-token group-name token *error *line *column *indent last-token)]
-                      (recur (subs input-str (count token)) (conj! tokens token-data) token-data))
+                      (recur (+ i (count token)) (conj! tokens token-data) token-data))
                     (persistent! tokens)))
          opts (assoc opts
                 :*error *error

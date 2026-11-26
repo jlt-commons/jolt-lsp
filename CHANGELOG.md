@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.6.1 - 2026-11-25
+
+- Parsing for syntax repair no longer slows down quadratically with file size:
+  a 400KB file took 10s and now takes half a second. The tokens are unchanged.
+- Connected components in the structural diff and dependency closures in
+  `move` no longer copy their work queue on every step.
+
 ## v0.6.0 - 2026-11-20
 
 - clj-kondo's `:discouraged-var` linter: uses of the vars listed under

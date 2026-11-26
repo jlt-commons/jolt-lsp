@@ -35,6 +35,14 @@
     (is (before? future ";; Worker" "(defn destination"))
     (is (str/includes? future "(def ^:private config 1)"))))
 
+(deftest a-wide-dependency-closure-moves-in-source-order
+  (let [n 1000
+        source (str "(ns sample.wide)\n\n(declare top)\n\n(defn destination [] (top))\n\n"
+                    (apply str (for [i (range n)] (str "(defn f" i " [] " i ")\n")))
+                    "(defn top [] [" (apply str (interpose " " (for [i (range n)] (str "(f" i ")")))) "])\n")
+        result (move/plan-form source {:form "top" :before "destination" :with-deps? true})]
+    (is (= (conj (mapv #(str "f" %) (range n)) "top") (get-in result [:plan :move-order])))))
+
 (deftest exact-move-refuses-stranded-dependencies-and-callers
   (let [dependency-result (move/plan-form dependent-source
                                           {:form "worker" :before "destination"})]

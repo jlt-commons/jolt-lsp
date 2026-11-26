@@ -15,7 +15,7 @@
     jolt-lsp.surgeon.refactor-test jolt-lsp.restructure-test jolt-lsp.dep-source-test
     jolt-lsp.mcp-root-test jolt-lsp.defcfn-proxy-test jolt-lsp.walk-gaps-test
     jolt-lsp.lsp-version-test jolt-lsp.lsp-lifecycle-test jolt-lsp.lsp-client-uri-test
-    jolt-lsp.kondo-parity-test])
+    jolt-lsp.kondo-parity-test jolt-lsp.parinferish-test])
 
 (defn -main [& _args]
   (apply require test-namespaces)
