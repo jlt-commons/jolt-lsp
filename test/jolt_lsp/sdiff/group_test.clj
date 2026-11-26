@@ -24,6 +24,11 @@
 (deftest components-are-largest-first
   (is (= [[:a :b :c] [:d]] (group/components [:a :b :c :d] #{#{:a :b} #{:b :c}}))))
 
+(deftest a-wide-star-is-one-component
+  (let [nodes (vec (range 20000))
+        edges (set (map (fn [i] #{0 i}) (range 1 20000)))]
+    (is (= [nodes] (group/components nodes edges)))))
+
 (deftest a-hub-does-not-join-its-callers
   (let [hub ["src/util.clj" "defn shared"]
         callers (for [i (range 4)] [(str "src/c" i ".clj") "defn use"])

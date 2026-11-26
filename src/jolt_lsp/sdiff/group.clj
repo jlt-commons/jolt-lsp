@@ -80,9 +80,9 @@
       (if-let [n (first left)]
         (if (seen n)
           (recur (rest left) seen out)
-          (let [c (loop [q [n] c #{n}]
-                    (if-let [x (first q)]
-                      (let [nx (remove c (adj x))] (recur (into (vec (rest q)) nx) (into c nx)))
+          (let [c (loop [q (conj clojure.lang.PersistentQueue/EMPTY n) c #{n}]
+                    (if-let [x (peek q)]
+                      (let [nx (remove c (adj x))] (recur (into (pop q) nx) (into c nx)))
                       c))]
             (recur (rest left) (into seen c) (conj out (filterv c nodes)))))
         (sort-by (comp - count) out)))))
